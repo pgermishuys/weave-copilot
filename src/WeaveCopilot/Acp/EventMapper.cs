@@ -228,7 +228,9 @@ public static class Paths
     public static string Relative(string path, string? cwd)
     {
         if (cwd is null) return path;
-        var root = cwd.TrimEnd('/', '\\') + Path.DirectorySeparatorChar;
-        return path.StartsWith(root, StringComparison.Ordinal) ? path[root.Length..] : path;
+        // Either separator matches either (Windows paths can arrive with '/' or '\\').
+        var root = cwd.TrimEnd('/', '\\') + "/";
+        var norm = path.Replace('\\', '/');
+        return norm.StartsWith(root.Replace('\\', '/'), StringComparison.Ordinal) ? norm[root.Length..] : path;
     }
 }

@@ -75,12 +75,40 @@ public class AgentTests
     }
 
     [Fact]
+    public async Task Steer_with_no_running_turn_is_rejected_with_32001_and_sends_nothing()
+    {
+        var (wire, host, _) = Start();
+        await wire.ResultAsync("session/new", Obj(("cwd", "/w")));
+        var res = await wire.CallAsync("_fleet/steer", Obj(("sessionId", "s-1"), ("prompt", "late")));
+        Assert.Equal(-32001, res["error"]!["code"]!.GetValue<int>());
+        Assert.Equal("No turn is running; send the text as a prompt instead", res["error"]!["message"]!.GetValue<string>());
+        Assert.Empty(host.Session.Sent);
+        await wire.CloseAsync();
+    }
+
+    [Fact]
+    public void Permission_asks_without_a_tool_call_id_get_a_unique_synthetic_id()
+    {
+        var req = new GitHub.Copilot.PermissionRequestUrl { Url = "https://example.test", Intention = "Fetch" };
+        var a = PermissionMapper.ToolCall(req, null)["toolCallId"]!.GetValue<string>();
+        var b = PermissionMapper.ToolCall(req, null)["toolCallId"]!.GetValue<string>();
+        Assert.StartsWith("perm-", a);
+        Assert.NotEqual(a, b);
+        var withId = new GitHub.Copilot.PermissionRequestUrl { Url = "u", Intention = "Fetch", ToolCallId = "t9" };
+        Assert.Equal("t9", PermissionMapper.ToolCall(withId, null)["toolCallId"]!.GetValue<string>());
+    }
+
+    [Fact]
     public async Task Steer_sends_immediately_and_set_model_switches_the_model()
     {
         var (wire, host, _) = Start();
         await wire.ResultAsync("session/new", Obj(("cwd", "/w")));
+        wire.Send(Obj(("jsonrpc", "2.0"), ("id", 900), ("method", "session/prompt"), ("params", Obj(("sessionId", "s-1"), ("prompt", new JsonArray(Obj(("type", "text"), ("text", "go"))))))));
+        while (host.Session.Sent.Count == 0) await Task.Delay(10);
         await wire.ResultAsync("_fleet/steer", Obj(("sessionId", "s-1"), ("prompt", "change course")));
-        Assert.Equal(("change course", true), host.Session.Sent.Single());
+        Assert.Equal([("go", false), ("change course", true)], host.Session.Sent);
+        host.Session.Raise(Ev.Idle());
+        Assert.Equal(900, (await wire.NextAsync())["id"]!.GetValue<int>());
         await wire.ResultAsync("session/set_model", Obj(("sessionId", "s-1"), ("modelId", "other")));
         await wire.ResultAsync("session/set_config_option", Obj(("sessionId", "s-1"), ("configId", "model"), ("value", "gpt-5-mini")));
         Assert.Equal(["other", "gpt-5-mini"], host.Session.Models);
