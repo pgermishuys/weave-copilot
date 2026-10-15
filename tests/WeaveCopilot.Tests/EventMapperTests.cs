@@ -102,7 +102,7 @@ public class EventMapperTests
         Assert.Equal("Using Cascade", outs[0].Str("hint"));
         Assert.Equal(("primary", "solver", "model-a", 0), (outs[1].Str("phase"), outs[1].Str("role"), outs[1].Str("model"), outs[1]["index"]!.GetValue<int>()));
         Assert.Equal(2.5, outs[2]["credits"]!.GetValue<double>());
-        Assert.Equal(("judge", "accept", 1), (outs[4].Str("phase"), outs[4].Str("verdict"), outs[4]["index"]!.GetValue<int>()));
+        Assert.Equal(("judge", "approved", 1), (outs[4].Str("phase"), outs[4].Str("verdict"), outs[4]["index"]!.GetValue<int>()));
         Assert.Equal(3.0, outs[5]["totalCredits"]!.GetValue<double>());
     }
 
@@ -114,5 +114,75 @@ public class EventMapperTests
             Ev.ToolStart("t1", "bash", """{"command":"ls"}""", fusion: "f:commit"), Ev.ToolDone("t1", true, "a.txt", fusion: "f:commit"),
             Ev.Message("m1", "done", fusion: "f:commit"), Ev.Usage(1, 1), Ev.Idle());
         Assert.Equal(["user_message_chunk", "tool_call", "tool_call_update", "agent_message_chunk"], outs.Select(Kind));
+    }
+
+    // Shapes recorded from real Cascade and Critique runs, with invented content and models.
+    private static GitHub.Copilot.SessionEvent Resolved(string pattern) => Ev.Make("session.fusion_resolved", $$"""{"contractVersion":1,"fallbackModel":"model-a","followUpModel":"model-a","policy":"standard","fusionId":"f1","pattern":"{{pattern}}","primaryModel":"model-a","secondaryModel":"model-b","hint":"Using {{pattern}}","syntheticModel":"hf","turnId":"f1:turn","planVersion":"2","phasePlan":[]}""");
+    private static string Js(string? v) => v is null ? "null" : System.Text.Json.JsonSerializer.Serialize(v);
+    private static GitHub.Copilot.SessionEvent PhaseDone(string id, string kind, string role, string model, string status, string? verdict = null, string? content = null) => Ev.Make("assistant.fusion_phase_completed",
+        $$$"""{"fusionId":"f1","phaseId":"{{{id}}}","phaseKind":"{{{kind}}}","role":"{{{role}}}","model":"{{{model}}}","status":"{{{status}}}","durationMs":4000,"conversationScope":"root","projectionMode":"none","verdict":{{{Js(verdict)}}},"content":{{{Js(content)}}},"usage":{"cachedTokens":0,"cacheWriteTokens":0,"inputTokens":10,"outputTokens":5,"requestCount":1,"totalNanoAiu":196170000}}""");
+    private static GitHub.Copilot.SessionEvent Completed(string pattern, string outcome = "completed") => Ev.Make("session.fusion_completed",
+        $$"""{"fusionId":"f1","pattern":"{{pattern}}","outcome":"{{outcome}}","commitId":"f1:commit","turnId":"f1:turn","syntheticModel":"hf","finalSourcePhaseId":"f1:revision","finalSourceModel":"model-a","followUpModel":"model-a","degradedReason":null,"phaseCount":3,"requestCount":7,"inputTokens":139779,"outputTokens":4882,"cachedTokens":114770,"cacheWriteTokens":24151,"totalNanoAiu":16827470000,"durationMs":69434}""");
+
+    [Fact]
+    public void A_critic_without_a_verdict_field_is_read_from_its_json_answer()
+    {
+        var outs = Run(new EventMapper(),
+            PhaseDone("f1:critic", "critic", "critic", "model-b", "succeeded", content: "{\"assessment\":\"revise\",\"feedback\":\"x\"}"),
+            PhaseDone("f1:judge", "judge", "judge", "model-b", "succeeded", verdict: "accept", content: "{\"score\":5}")).Cast<Fusion>().Select(f => f.Params).ToList();
+        Assert.Equal(["needs repair", "approved"], outs.Select(o => o.Str("verdict")));
+        Assert.Null(EventMapper.VerdictOf(null, "plain text answer"));
+        Assert.Null(EventMapper.VerdictOf(null, "{not json"));
+    }
+
+    [Fact]
+    public void A_failed_pass_carries_its_reason_not_a_verdict()
+    {
+        var f = Run(new EventMapper(), Ev.Make("assistant.fusion_phase_failed", """{"fusionId":"f1","phaseId":"f1:critic","phaseKind":"critic","role":"critic","model":"model-b","status":"failed","reason":"timeout","errorMessage":"The critic timed out","durationMs":900,"conversationScope":"review","usage":{"cachedTokens":0,"cacheWriteTokens":0,"inputTokens":1,"outputTokens":0,"requestCount":1,"totalNanoAiu":0}}"""))
+            .Cast<Fusion>().Single().Params;
+        Assert.Equal(("failed", "The critic timed out"), (f.Str("status"), f.Str("reason")));
+        Assert.Null(f.Str("verdict"));
+    }
+
+    [Fact]
+    public void A_critique_turn_ends_with_its_totals_which_replace_the_per_call_figures_in_the_usage()
+    {
+        var m = new EventMapper();
+        var outs = Run(m, Resolved("critique"), Ev.Usage(999, 9), PhaseDone("f1:phase:0", "draft", "solver", "model-a", "succeeded"),
+            PhaseDone("f1:critic", "critic", "critic", "model-b", "succeeded", verdict: "revise"), Completed("critique"), Ev.Idle());
+        var fusion = outs.OfType<Fusion>().Select(f => f.Params).ToList();
+        Assert.Equal(["resolved", "phase_completed", "phase_completed", "completed"], fusion.Select(o => o.Str("event")));
+        Assert.Equal([0, 1], fusion.Skip(1).Take(2).Select(o => o["index"]!.GetValue<int>()));
+        Assert.Equal(("critique", 16.82747, 7L), (fusion[3].Str("pattern"), fusion[3]["totalCredits"]!.GetValue<double>(), fusion[3]["requests"]!.GetValue<long>()));
+        var usage = outs.OfType<Idle>().Single().Usage!;
+        Assert.Equal((139779L, 4882L, 144661L, 114770L, 24151L), (usage["inputTokens"]!.GetValue<long>(), usage["outputTokens"]!.GetValue<long>(),
+            usage["totalTokens"]!.GetValue<long>(), usage["cachedReadTokens"]!.GetValue<long>(), usage["cachedWriteTokens"]!.GetValue<long>()));
+        Assert.Equal(16.82747, usage["credits"]!.GetValue<double>(), 5);
+    }
+
+    [Fact]
+    public void A_plain_turn_reports_the_credits_its_calls_did()
+    {
+        var m = new EventMapper();
+        var idle = (Idle)Run(m, Ev.Make("assistant.usage", """{"model":"m","inputTokens":100,"outputTokens":20,"copilotUsage":{"totalNanoAiu":250000000,"tokenDetails":[]}}"""),
+            Ev.Make("assistant.usage", """{"model":"m","inputTokens":50,"outputTokens":5,"copilotUsage":{"totalNanoAiu":250000000,"tokenDetails":[]}}"""), Ev.Idle()).Single();
+        Assert.Equal(0.5, idle.Usage!["credits"]!.GetValue<double>());
+        Assert.Null(((Idle)Run(m, Ev.Usage(1, 1), Ev.Idle()).Single()).Usage!["credits"]);
+    }
+
+    [Fact]
+    public void History_replays_the_fusion_events_the_cli_kept_numbering_passes_that_have_no_start_event()
+    {
+        var outs = Run(new EventMapper(history: true),
+            Ev.Make("user.message", """{"content":"add a test"}"""), Resolved("cascade"),
+            PhaseDone("f1:phase:0", "primary", "solver", "model-a", "succeeded"), Ev.ToolStart("t1", "bash", """{"command":"ls"}"""),
+            PhaseDone("f1:judge", "judge", "judge", "model-b", "succeeded", verdict: "accept"), Completed("cascade"), Ev.Usage(1, 1), Ev.Idle());
+        Assert.Equal(["user_message_chunk", "_resolved", "_phase_completed", "tool_call", "_phase_completed", "_completed"],
+            outs.Select(o => o is Fusion f ? "_" + f.Params.Str("event") : Kind(o)));
+        var passes = outs.OfType<Fusion>().Where(f => f.Params.Str("event") == "phase_completed").Select(f => f.Params).ToList();
+        Assert.Equal([0, 1], passes.Select(p => p["index"]!.GetValue<int>()));
+        Assert.Equal("approved", passes[1].Str("verdict"));
+        // and replaying a turn must not leave usage behind for the next live one
+        Assert.Null(((Idle)Run(new EventMapper(history: true), Ev.Idle()).SingleOrDefault() ?? new Idle(false, null)).Usage);
     }
 }
