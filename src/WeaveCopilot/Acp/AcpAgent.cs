@@ -7,7 +7,7 @@ using WeaveCopilot.Sdk;
 namespace WeaveCopilot.Acp;
 
 /// <summary>The ACP agent: JSON-RPC methods on one side, an <see cref="ICopilotHost"/> on the other.</summary>
-public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydraFusion, string version, Action<string> onFatal)
+public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydraFusion, string version, Action<string> onFatal, ICopilotLogin? login = null)
 {
     private const string DefaultModel = "gpt-5-mini";
     private const string HydraModel = "hydrafusion";
@@ -50,12 +50,56 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
                 "session/set_config_option" when p.Str("configId") == "model" => await SetModelAsync(p, p.Str("value")),
                 "session/prompt" => await PromptAsync(p),
                 "_fleet/steer" => await SteerAsync(p),
+                "_fleet/auth/status" => await AuthStatusAsync(),
+                "_fleet/auth/login" => await LoginAsync(p),
+                "_fleet/auth/attempt" => AttemptStatus(p),
+                "_fleet/auth/cancel" => CancelLogin(p),
+                "_fleet/auth/logout" => await LogoutAsync(),
                 _ => throw new JsonRpcException(-32601, $"Method not found: {method}"),
             };
         }
         catch (JsonRpcException) { throw; }
         catch (Exception e) when (IsChildDeath(e)) { onFatal("Copilot CLI exited: " + e.Message); throw; }
         catch (Exception e) { throw new JsonRpcException(-32000, Readable(e)); }
+    }
+
+    private async Task<JsonNode?> AuthStatusAsync()
+    {
+        var s = await host.AuthStatusAsync();
+        // Who is signed in and how, never the token itself.
+        return new JsonObject { ["authenticated"] = s.Authenticated, ["authType"] = s.AuthType, ["host"] = s.Host, ["login"] = s.Login, ["message"] = s.Message };
+    }
+
+    private ICopilotLogin Login => login ?? throw new JsonRpcException(-32601, "Signing in is not available here");
+
+    /// <summary>Starts the CLI's device-code sign-in; the user finishes it in a browser, and <c>_fleet/auth/attempt</c> says when it has.</summary>
+    private async Task<JsonNode?> LoginAsync(JsonNode? p)
+    {
+        var a = await Login.StartAsync(p.Str("host"), CancellationToken.None);
+        return new JsonObject { ["attemptId"] = a.Id, ["url"] = a.Url, ["code"] = a.Code, ["expiresAt"] = a.ExpiresAt.ToString("O") };
+    }
+
+    private JsonNode? AttemptStatus(JsonNode? p)
+    {
+        var g = Login.Get(p.Str("attemptId") ?? "");
+        return new JsonObject { ["state"] = g.State, ["message"] = g.Message };
+    }
+
+    private JsonNode? CancelLogin(JsonNode? p)
+    {
+        Login.Cancel(p.Str("attemptId") ?? "");
+        return new JsonObject();
+    }
+
+    /// <summary>Removes the sign-in the CLI keeps in its own config; a sign-in from an environment variable or the gh CLI isn't ours to remove.</summary>
+    private async Task<JsonNode?> LogoutAsync()
+    {
+        var s = await host.AuthStatusAsync();
+        if (s.Authenticated && s.AuthType is "env" or "gh-cli")
+            throw new JsonRpcException(-32000, s.AuthType == "env"
+                ? "Copilot is signed in through an environment variable (COPILOT_GITHUB_TOKEN, GH_TOKEN or GITHUB_TOKEN); unset it to sign out."
+                : "Copilot is using the GitHub CLI's sign-in; run `gh auth logout` to sign out.");
+        return new JsonObject { ["removed"] = Login.SignOut(s.Login) };
     }
 
     private async Task<JsonNode?> InitializeAsync()

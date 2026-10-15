@@ -120,6 +120,8 @@ public sealed class FakeHost : ICopilotHost
     public Task StartAsync() => Task.CompletedTask;
     public Task<string?> VersionAsync() => Task.FromResult<string?>("9.9.9");
     public Task PingAsync() => Task.CompletedTask;
+    public AuthStatus Auth { get; set; } = new(true, "user", "https://github.com", "octo-demo", null);
+    public Task<AuthStatus> AuthStatusAsync() => Task.FromResult(Auth);
     public Task<IReadOnlyList<ModelEntry>> ListModelsAsync() => Task.FromResult<IReadOnlyList<ModelEntry>>(Models);
     public Task<ICopilotSession> CreateAsync(string cwd, string? model, PermissionCallback permission) { Creates++; CreatedModel = model; Permission = permission; return Task.FromResult<ICopilotSession>(Session); }
     public Task<ICopilotSession> ResumeAsync(string sessionId, string cwd, PermissionCallback permission) { Permission = permission; return Task.FromResult<ICopilotSession>(Session); }

@@ -6,6 +6,8 @@ namespace WeaveCopilot.Sdk;
 /// <summary>The real host: runs the Copilot CLI as a child process over stdio (never in-process) and adapts the SDK to the seam.</summary>
 public sealed class SdkHost(string cliPath, bool hydraFusion) : ICopilotHost
 {
+    public string CliPath { get; } = cliPath;
+
     private readonly CopilotClient _client = new(new CopilotClientOptions
     {
         // COPILOT_HOME is also inherited by the child through the environment.
@@ -45,6 +47,12 @@ public sealed class SdkHost(string cliPath, bool hydraFusion) : ICopilotHost
 
     public async Task<IReadOnlyList<ModelEntry>> ListModelsAsync() =>
         (await _client.ListModelsAsync()).Select(m => new ModelEntry(m.Id, m.Name ?? m.Id, m.Billing?.Multiplier is { } x ? $"{x:0.##}x" : null)).ToList();
+
+    public async Task<AuthStatus> AuthStatusAsync()
+    {
+        var s = await _client.GetAuthStatusAsync();
+        return new AuthStatus(s.IsAuthenticated, s.AuthType, s.Host, s.Login, s.StatusMessage);
+    }
 
     private Func<PermissionRequest, PermissionInvocation, Task<PermissionDecision>> Wrap(PermissionCallback cb) =>
         (req, inv) => cb(inv.SessionId, req);

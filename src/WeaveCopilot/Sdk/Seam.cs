@@ -5,6 +5,8 @@ namespace WeaveCopilot.Sdk;
 
 public sealed record ModelEntry(string Id, string Name, string? Usage);
 
+public sealed record AuthStatus(bool Authenticated, string? AuthType, string? Host, string? Login, string? Message);
+
 public delegate Task<PermissionDecision> PermissionCallback(string sessionId, PermissionRequest request);
 
 /// <summary>Small seam around one Copilot SDK session so the ACP agent is testable without the CLI.</summary>
@@ -26,6 +28,8 @@ public interface ICopilotHost : IAsyncDisposable
     /// <summary>Throws if the CLI child process is gone.</summary>
     Task PingAsync();
     Task<IReadOnlyList<ModelEntry>> ListModelsAsync();
+    /// <summary>Who the CLI is signed in as, asked of the CLI so it reflects a sign-in made a moment ago.</summary>
+    Task<AuthStatus> AuthStatusAsync();
     Task<ICopilotSession> CreateAsync(string cwd, string? model, PermissionCallback permission);
     Task<ICopilotSession> ResumeAsync(string sessionId, string cwd, PermissionCallback permission);
     /// <summary>Cheap create-only probe: can a session be created with the synthetic hydrafusion model?</summary>
