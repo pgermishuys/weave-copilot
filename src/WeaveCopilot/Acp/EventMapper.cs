@@ -17,7 +17,8 @@ public sealed record Failure(string Message) : AgentOutput;
 /// <summary>
 /// Maps Copilot SDK session events to ACP updates. One instance per session; stateful only for
 /// de-duplication (streamed ids, tool calls, fusion pass order) and per-turn token usage.
-/// Live mode streams; history mode replays a finished transcript (no thoughts, no usage, no fusion).
+/// Live mode streams; history mode replays a finished transcript (no thoughts, no usage; the CLI keeps a HydraFusion turn's
+/// resolved, finished-pass and completed events, so those replay, but not a pass's start).
 /// </summary>
 public sealed class EventMapper(string? cwd = null, bool history = false)
 {
@@ -28,6 +29,9 @@ public sealed class EventMapper(string? cwd = null, bool history = false)
     private readonly HashSet<string> _toolsSeen = [];
     private readonly Dictionary<string, int> _phaseIndex = [];
     private long _in, _out, _cacheRead, _cacheWrite, _reasoning;
+    private long _nanoAiu;                                       // credits the turn's own calls reported, in nano-AIU
+    private Fusion? _heldResolved;                           // history: the CLI logs `resolved` before the user's message, so it waits for the turn's first pass
+    private FusionTotals? _fusion;                               // the turn's authoritative totals, once fusion_completed arrived
 
     public IEnumerable<AgentOutput> Map(SessionEvent ev)
     {
@@ -71,6 +75,7 @@ public sealed class EventMapper(string? cwd = null, bool history = false)
             case AssistantUsageEvent au when !history:
                 _in += au.Data.InputTokens ?? 0; _out += au.Data.OutputTokens ?? 0; _reasoning += au.Data.ReasoningTokens ?? 0;
                 _cacheRead += au.Data.CacheReadTokens ?? 0; _cacheWrite += au.Data.CacheWriteTokens ?? 0;
+                _nanoAiu += (long)(au.Data.CopilotUsage?.TotalNanoAiu ?? 0);
                 break;
             case SessionErrorEvent e when !history:
                 yield return new Failure(e.Data.Message ?? e.Data.ErrorType ?? "Copilot reported an error");
@@ -81,50 +86,60 @@ public sealed class EventMapper(string? cwd = null, bool history = false)
             case SessionIdleEvent idle when !history:
                 yield return new Idle(idle.Data.Aborted == true, TakeUsage());
                 break;
-            case SessionFusionResolvedEvent fr when !history:
-                yield return new Fusion(new JsonObject
+            case SessionFusionResolvedEvent fr:
+                var resolved = new Fusion(new JsonObject
                 {
-                    ["event"] = "resolved", ["pattern"] = fr.Data.Pattern.Value, ["model"] = fr.Data.PrimaryModel,
+                    ["event"] = "resolved", ["pattern"] = fr.Data.Pattern.Value, ["model"] = fr.Data.PrimaryModel, ["secondaryModel"] = fr.Data.SecondaryModel,
                     ["hint"] = fr.Data.Hint, ["status"] = "resolved", ["index"] = 0,
                 });
+                if (history) _heldResolved = resolved;
+                else yield return resolved;
                 break;
             case AssistantFusionPhaseStartedEvent ps when !history:
-                var idx = _phaseIndex.Count;
-                _phaseIndex[ps.Data.PhaseId] = idx;
+                var idx = IndexOf(ps.Data.PhaseId);
                 yield return new Fusion(new JsonObject
                 {
                     ["event"] = "phase_started", ["pattern"] = ps.Data.Pattern.Value, ["phase"] = ps.Data.PhaseKind.Value,
                     ["role"] = ps.Data.Role, ["model"] = ps.Data.Model, ["status"] = "running", ["index"] = idx,
                 });
                 break;
-            case AssistantFusionPhaseCompletedEvent pc when !history:
+            case AssistantFusionPhaseCompletedEvent pc:
+                if (TakeHeld() is { } h1) yield return h1;
                 yield return new Fusion(new JsonObject
                 {
                     ["event"] = "phase_completed", ["phase"] = pc.Data.PhaseKind.Value, ["role"] = pc.Data.Role, ["model"] = pc.Data.Model,
-                    ["status"] = pc.Data.Status.Value, ["verdict"] = pc.Data.Verdict, ["durationMs"] = pc.Data.DurationMs,
+                    ["status"] = pc.Data.Status.Value, ["verdict"] = VerdictOf(pc.Data.Verdict, pc.Data.Content), ["durationMs"] = pc.Data.DurationMs,
                     ["credits"] = pc.Data.Usage is { } pu ? pu.TotalNanoAiu / 1e9 : null,
-                    ["index"] = _phaseIndex.GetValueOrDefault(pc.Data.PhaseId),
+                    ["index"] = IndexOf(pc.Data.PhaseId),
                 });
                 break;
-            case AssistantFusionPhaseFailedEvent pf when !history:
+            case AssistantFusionPhaseFailedEvent pf:
+                if (TakeHeld() is { } h2) yield return h2;
                 yield return new Fusion(new JsonObject
                 {
                     ["event"] = "phase_completed", ["phase"] = pf.Data.PhaseKind.Value, ["role"] = pf.Data.Role, ["model"] = pf.Data.Model,
-                    ["status"] = "failed", ["verdict"] = pf.Data.ErrorMessage ?? pf.Data.Reason, ["durationMs"] = pf.Data.DurationMs,
+                    ["status"] = "failed", ["reason"] = pf.Data.ErrorMessage ?? pf.Data.Reason, ["durationMs"] = pf.Data.DurationMs,
                     ["credits"] = pf.Data.Usage is { } fu ? fu.TotalNanoAiu / 1e9 : null,
-                    ["index"] = _phaseIndex.GetValueOrDefault(pf.Data.PhaseId),
+                    ["index"] = IndexOf(pf.Data.PhaseId),
                 });
                 break;
-            case SessionFusionCompletedEvent fc when !history:
+            case SessionFusionCompletedEvent fc:
+                if (TakeHeld() is { } h3) yield return h3;
+                if (!history)
+                    _fusion = new FusionTotals(fc.Data.InputTokens, fc.Data.OutputTokens, fc.Data.CachedTokens, fc.Data.CacheWriteTokens ?? 0, fc.Data.RequestCount, fc.Data.TotalNanoAiu);
                 yield return new Fusion(new JsonObject
                 {
                     ["event"] = "completed", ["pattern"] = fc.Data.Pattern.Value, ["model"] = fc.Data.FinalSourceModel, ["status"] = fc.Data.Outcome,
                     ["durationMs"] = fc.Data.DurationMs, ["totalCredits"] = fc.Data.TotalNanoAiu / 1e9, ["index"] = Math.Max(0, _phaseIndex.Count - 1),
+                    ["requests"] = fc.Data.RequestCount, ["inputTokens"] = fc.Data.InputTokens, ["outputTokens"] = fc.Data.OutputTokens,
+                    ["degradedReason"] = fc.Data.DegradedReason,
                 });
                 _phaseIndex.Clear();
                 break;
         }
     }
+
+    private Fusion? TakeHeld() { var h = _heldResolved; _heldResolved = null; return h; }
 
     private bool IsLiveTwinSeen(SessionEvent ev) => ev switch
     {
@@ -143,15 +158,61 @@ public sealed class EventMapper(string? cwd = null, bool history = false)
         _ => null,
     };
 
+    /// <summary>Phase ids are numbered in the order they are first seen; a replayed pass has no start event, so it is numbered when it ends.</summary>
+    private int IndexOf(string phaseId)
+    {
+        if (!_phaseIndex.TryGetValue(phaseId, out var i)) _phaseIndex[phaseId] = i = _phaseIndex.Count;
+        return i;
+    }
+
+    /// <summary>
+    /// A judge's verdict as the CLI reports it ("accept"), or else a critic's assessment out of its JSON answer
+    /// ("revise"), in the words the pass row shows.
+    /// </summary>
+    internal static string? VerdictOf(string? verdict, string? content)
+    {
+        var raw = verdict;
+        if (string.IsNullOrEmpty(raw) && content is { Length: > 0 } && content.TrimStart().StartsWith('{'))
+        {
+            try { raw = System.Text.Json.Nodes.JsonNode.Parse(content)?.Str("assessment"); } catch (System.Text.Json.JsonException) { }
+        }
+        return raw?.Trim().ToLowerInvariant() switch
+        {
+            null or "" => null,
+            "accept" or "accepted" or "approve" or "approved" or "pass" => "approved",
+            "revise" or "repair" or "reject" or "rejected" or "fail" => "needs repair",
+            var other => other,
+        };
+    }
+
+    private sealed record FusionTotals(double Input, double Output, double Cached, double CacheWrite, double Requests, double NanoAiu);
+
+    /// <summary>
+    /// The turn's tokens and credits, once. A HydraFusion turn reports one total across all its passes, which wins over the
+    /// per-call figures (its commit copies are dropped above). Input counts the cached tokens, as the CLI reports it.
+    /// </summary>
     private JsonObject? TakeUsage()
     {
-        if (_in + _out == 0) return null;
-        var u = new JsonObject
+        JsonObject? u = null;
+        if (_fusion is { } f)
         {
-            ["inputTokens"] = _in, ["outputTokens"] = _out, ["totalTokens"] = _in + _out,
-            ["thoughtTokens"] = _reasoning, ["cachedReadTokens"] = _cacheRead, ["cachedWriteTokens"] = _cacheWrite,
-        };
-        _in = _out = _cacheRead = _cacheWrite = _reasoning = 0;
+            u = new JsonObject
+            {
+                ["inputTokens"] = (long)f.Input, ["outputTokens"] = (long)f.Output, ["totalTokens"] = (long)(f.Input + f.Output),
+                ["cachedReadTokens"] = (long)f.Cached, ["cachedWriteTokens"] = (long)f.CacheWrite, ["credits"] = f.NanoAiu / 1e9,
+            };
+        }
+        else if (_in + _out > 0)
+        {
+            u = new JsonObject
+            {
+                ["inputTokens"] = _in, ["outputTokens"] = _out, ["totalTokens"] = _in + _out,
+                ["thoughtTokens"] = _reasoning, ["cachedReadTokens"] = _cacheRead, ["cachedWriteTokens"] = _cacheWrite,
+            };
+            if (_nanoAiu > 0) u["credits"] = _nanoAiu / 1e9;
+        }
+        _in = _out = _cacheRead = _cacheWrite = _reasoning = _nanoAiu = 0;
+        _fusion = null;
         return u;
     }
 
