@@ -1,0 +1,89 @@
+using GitHub.Copilot;
+using GitHub.Copilot.Rpc;
+
+namespace WeaveCopilot.Sdk;
+
+/// <summary>The real host: runs the Copilot CLI as a child process over stdio (never in-process) and adapts the SDK to the seam.</summary>
+public sealed class SdkHost(string cliPath, bool hydraFusion) : ICopilotHost
+{
+    private readonly CopilotClient _client = new(new CopilotClientOptions
+    {
+        // COPILOT_HOME is also inherited by the child through the environment.
+        BaseDirectory = Environment.GetEnvironmentVariable("COPILOT_HOME") is { Length: > 0 } home ? home : null,
+        Connection = RuntimeConnection.ForStdio(cliPath, hydraFusion ? ["--experimental"] : null),
+    });
+
+    public static string ResolveCli(string? explicitPath)
+    {
+        var candidate = explicitPath ?? Environment.GetEnvironmentVariable("WEAVE_COPILOT_CLI");
+        if (!string.IsNullOrEmpty(candidate))
+            return File.Exists(candidate) ? candidate : throw new FileNotFoundException($"Copilot CLI not found at '{candidate}'");
+        var exe = OperatingSystem.IsWindows() ? "copilot.exe" : "copilot";
+        foreach (var dir in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+            if (File.Exists(Path.Combine(dir, exe))) return Path.Combine(dir, exe);
+        throw new FileNotFoundException("Copilot CLI not found: pass --copilot-cli <path>, set WEAVE_COPILOT_CLI, or put `copilot` on PATH");
+    }
+
+    public Task StartAsync() => _client.StartAsync();
+
+    public async Task<string?> VersionAsync() { try { return (await _client.GetStatusAsync()).Version; } catch { return null; } }
+
+    public async Task PingAsync() => await _client.GetStatusAsync();
+
+    public async Task<IReadOnlyList<ModelEntry>> ListModelsAsync() =>
+        (await _client.ListModelsAsync()).Select(m => new ModelEntry(m.Id, m.Name ?? m.Id, m.Billing?.Multiplier is { } x ? $"{x:0.##}x" : null)).ToList();
+
+    private Func<PermissionRequest, PermissionInvocation, Task<PermissionDecision>> Wrap(PermissionCallback cb) =>
+        (req, inv) => cb(inv.SessionId, req);
+
+    public async Task<ICopilotSession> CreateAsync(string cwd, string? model, PermissionCallback permission)
+    {
+        var config = new SessionConfig { Model = model, WorkingDirectory = cwd, Streaming = true, OnPermissionRequest = Wrap(permission) };
+        Gate(config);
+        return new SdkSession(await _client.CreateSessionAsync(config));
+    }
+
+    public async Task<ICopilotSession> ResumeAsync(string sessionId, string cwd, PermissionCallback permission)
+    {
+        var config = new ResumeSessionConfig { WorkingDirectory = cwd, Streaming = true, OnPermissionRequest = Wrap(permission) };
+        Gate(config);
+        return new SdkSession(await _client.ResumeSessionAsync(sessionId, config));
+    }
+
+    /// <summary>HydraFusion is opt-in: only with --hydrafusion do we turn on experimental mode and its single rollout flag.</summary>
+    private void Gate(SessionConfigBase config)
+    {
+        if (!hydraFusion) return;
+        config.EnableExperimentalMode = true;
+        config.FeatureFlags = new Dictionary<string, bool> { ["HYDRAFUSION_ROLLOUT"] = true };
+    }
+
+    public async Task<bool> ProbeHydraFusionAsync(string cwd)
+    {
+        try
+        {
+            var config = new SessionConfig { Model = "hydrafusion", WorkingDirectory = cwd, OnPermissionRequest = (_, _) => Task.FromResult(PermissionDecision.Reject("probe")) };
+            Gate(config);
+            await using var s = await _client.CreateSessionAsync(config);
+            var id = s.SessionId;
+            await s.DisposeAsync();
+            try { await _client.DeleteSessionAsync(id); } catch { /* probe leftovers are harmless */ }
+            return true;
+        }
+        catch { return false; }
+    }
+
+    public async ValueTask DisposeAsync() { try { await _client.StopAsync(); } catch { } await _client.DisposeAsync(); }
+
+    private sealed class SdkSession(CopilotSession s) : ICopilotSession
+    {
+        public string Id => s.SessionId;
+        public IDisposable Subscribe(Action<SessionEvent> handler) => s.On(handler);
+        public Task SendAsync(string prompt, bool immediate) =>
+            s.SendAsync(new MessageOptions { Prompt = prompt, Mode = immediate ? "immediate" : null });
+        public Task AbortAsync() => s.AbortAsync();
+        public Task SetModelAsync(string modelId) => s.SetModelAsync(modelId);
+        public async Task<IReadOnlyList<SessionEvent>> GetEventsAsync() => await s.GetEventsAsync();
+        public ValueTask DisposeAsync() => s.DisposeAsync();
+    }
+}
