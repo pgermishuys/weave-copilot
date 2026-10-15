@@ -21,7 +21,9 @@ public sealed record Failure(string Message) : AgentOutput;
 /// </summary>
 public sealed class EventMapper(string? cwd = null, bool history = false)
 {
-    private readonly HashSet<string> _streamedMessages = [];
+    private readonly HashSet<string> _liveMessages = [];       // message ids that already produced text live
+    private readonly HashSet<string> _liveToolStarts = [];
+    private readonly HashSet<string> _liveToolDones = [];
     private readonly HashSet<string> _streamedReasoning = [];
     private readonly HashSet<string> _toolsSeen = [];
     private readonly Dictionary<string, int> _phaseIndex = [];
@@ -29,8 +31,10 @@ public sealed class EventMapper(string? cwd = null, bool history = false)
 
     public IEnumerable<AgentOutput> Map(SessionEvent ev)
     {
-        // HydraFusion replays every tool/message event at commit with a commit id; the live copy was already streamed.
-        if (!history && CommitId(ev) is not null) yield break;
+        // HydraFusion replays tool/message events at commit with a commit id. Drop a replay only when its live twin
+        // was already emitted: with streaming on, an answer can reach us only on the commit copy.
+        if (!history && CommitId(ev) is not null && IsLiveTwinSeen(ev)) yield break;
+        if (!history && CommitId(ev) is not null && ev is AssistantUsageEvent) yield break;
 
         switch (ev)
         {
@@ -38,12 +42,15 @@ public sealed class EventMapper(string? cwd = null, bool history = false)
                 yield return Chunk("user_message_chunk", u.Data.Content);
                 break;
             case AssistantMessageDeltaEvent d when !history && !string.IsNullOrEmpty(d.Data.DeltaContent):
-                if (d.Data.MessageId is { } mid) _streamedMessages.Add(mid);
+                if (d.Data.MessageId is { } mid) _liveMessages.Add(mid);
                 yield return Chunk("agent_message_chunk", d.Data.DeltaContent);
                 break;
             case AssistantMessageEvent m:
-                if (!string.IsNullOrEmpty(m.Data.Content) && !(m.Data.MessageId is { } id && _streamedMessages.Contains(id)))
+                if (!string.IsNullOrEmpty(m.Data.Content) && !(m.Data.MessageId is { } id && _liveMessages.Contains(id)))
+                {
+                    if (!history && m.Data.MessageId is { } liveId) _liveMessages.Add(liveId);
                     yield return Chunk("agent_message_chunk", m.Data.Content);
+                }
                 break;
             case AssistantReasoningDeltaEvent rd when !history && !string.IsNullOrEmpty(rd.Data.DeltaContent):
                 if (rd.Data.ReasoningId is { } rid) _streamedReasoning.Add(rid);
@@ -119,6 +126,14 @@ public sealed class EventMapper(string? cwd = null, bool history = false)
         }
     }
 
+    private bool IsLiveTwinSeen(SessionEvent ev) => ev switch
+    {
+        AssistantMessageEvent e => e.Data.MessageId is { } id && _liveMessages.Contains(id),
+        ToolExecutionStartEvent e => e.Data.ToolCallId is { } id && _liveToolStarts.Contains(id),
+        ToolExecutionCompleteEvent e => e.Data.ToolCallId is { } id && _liveToolDones.Contains(id),
+        _ => false,
+    };
+
     private static string? CommitId(SessionEvent ev) => ev switch
     {
         AssistantMessageEvent e => e.Data.Fusion?.CommitId,
@@ -149,6 +164,7 @@ public sealed class EventMapper(string? cwd = null, bool history = false)
     {
         var id = d.ToolCallId ?? "";
         _toolsSeen.Add(id);
+        _liveToolStarts.Add(id);
         var args = Json.FromElement(d.Arguments);
         var path = PathOf(args);
         var title = d.ToolTitle ?? d.ToolName ?? "Tool";
@@ -166,6 +182,7 @@ public sealed class EventMapper(string? cwd = null, bool history = false)
     private IEnumerable<AgentOutput> ToolComplete(ToolExecutionCompleteData d)
     {
         var id = d.ToolCallId ?? "";
+        _liveToolDones.Add(id);
         if (_toolsSeen.Add(id))
             yield return new Update(new JsonObject { ["sessionUpdate"] = "tool_call", ["toolCallId"] = id, ["title"] = "Tool", ["kind"] = "other", ["status"] = "pending" });
         var body = new JsonObject

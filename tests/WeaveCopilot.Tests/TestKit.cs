@@ -114,13 +114,14 @@ public sealed class FakeHost : ICopilotHost
     public bool HydraProbeResult { get; set; } = true;
     public int HydraProbes { get; private set; }
     public string? CreatedModel { get; private set; }
+    public int Creates { get; private set; }
     public PermissionCallback? Permission { get; private set; }
 
     public Task StartAsync() => Task.CompletedTask;
     public Task<string?> VersionAsync() => Task.FromResult<string?>("9.9.9");
     public Task PingAsync() => Task.CompletedTask;
     public Task<IReadOnlyList<ModelEntry>> ListModelsAsync() => Task.FromResult<IReadOnlyList<ModelEntry>>(Models);
-    public Task<ICopilotSession> CreateAsync(string cwd, string? model, PermissionCallback permission) { CreatedModel = model; Permission = permission; return Task.FromResult<ICopilotSession>(Session); }
+    public Task<ICopilotSession> CreateAsync(string cwd, string? model, PermissionCallback permission) { Creates++; CreatedModel = model; Permission = permission; return Task.FromResult<ICopilotSession>(Session); }
     public Task<ICopilotSession> ResumeAsync(string sessionId, string cwd, PermissionCallback permission) { Permission = permission; return Task.FromResult<ICopilotSession>(Session); }
     public Task<bool> ProbeHydraFusionAsync(string cwd) { HydraProbes++; return Task.FromResult(HydraProbeResult); }
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;

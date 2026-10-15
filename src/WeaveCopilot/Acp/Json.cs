@@ -13,7 +13,26 @@ internal sealed partial class AcpJsonContext : JsonSerializerContext;
 
 internal static class Json
 {
-    public static string Serialize(JsonNode node) => node.ToJsonString(AcpJsonContext.Default.Options);
+    /// <summary>Serializes a wire message, omitting null fields (raw tool input/output is passed through untouched).</summary>
+    public static string Serialize(JsonNode node)
+    {
+        Prune(node);
+        return node.ToJsonString(AcpJsonContext.Default.Options);
+    }
+
+    private static void Prune(JsonNode? node)
+    {
+        switch (node)
+        {
+            case JsonObject o:
+                foreach (var key in o.Where(kv => kv.Value is null && kv.Key != "id").Select(kv => kv.Key).ToList()) o.Remove(key);
+                foreach (var (key, value) in o) if (key is not ("rawInput" or "rawOutput")) Prune(value);
+                break;
+            case JsonArray a:
+                foreach (var item in a) Prune(item);
+                break;
+        }
+    }
 
     public static JsonNode? Parse(string text) => JsonNode.Parse(text);
 

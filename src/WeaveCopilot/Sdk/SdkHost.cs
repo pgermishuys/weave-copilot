@@ -24,7 +24,12 @@ public sealed class SdkHost(string cliPath, bool hydraFusion) : ICopilotHost
         throw new FileNotFoundException("Copilot CLI not found: pass --copilot-cli <path>, set WEAVE_COPILOT_CLI, or put `copilot` on PATH");
     }
 
-    public Task StartAsync() => _client.StartAsync();
+    private readonly ExperimentalGuard? _guard = hydraFusion ? new ExperimentalGuard(ExperimentalGuard.DefaultHome()) : null;
+
+    public Task StartAsync() { _guard?.Snapshot(); return _client.StartAsync(); }
+
+    /// <summary>Puts the user's settings.json `experimental` value back; safe to call more than once.</summary>
+    public void RestoreSettings() => _guard?.Restore();
 
     public async Task<string?> VersionAsync() { try { return (await _client.GetStatusAsync()).Version; } catch { return null; } }
 
@@ -73,7 +78,7 @@ public sealed class SdkHost(string cliPath, bool hydraFusion) : ICopilotHost
         catch { return false; }
     }
 
-    public async ValueTask DisposeAsync() { try { await _client.StopAsync(); } catch { } await _client.DisposeAsync(); }
+    public async ValueTask DisposeAsync() { try { await _client.StopAsync(); } catch { } await _client.DisposeAsync(); RestoreSettings(); }
 
     private sealed class SdkSession(CopilotSession s) : ICopilotSession
     {

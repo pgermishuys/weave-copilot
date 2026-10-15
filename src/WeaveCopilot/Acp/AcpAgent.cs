@@ -43,6 +43,7 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
             return method switch
             {
                 "initialize" => await InitializeAsync(),
+                "_fleet/models" => await ModelsRequestAsync(p),
                 "session/new" => await NewAsync(p),
                 "session/load" => await LoadAsync(p),
                 "session/set_model" => await SetModelAsync(p, p.Str("modelId")),
@@ -81,6 +82,17 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
         var model = models.Any(m => m.Id == DefaultModel) ? DefaultModel : null;
         var s = await Register(await host.CreateAsync(cwd, model, Permission), cwd, model ?? models.FirstOrDefault()?.Id);
         return new JsonObject { ["sessionId"] = s.Session.Id, ["models"] = ModelsJson(models, s.Model) };
+    }
+
+    /// <summary>Model catalog without creating a Copilot session, so nothing piles up in the user's session list.</summary>
+    private async Task<JsonNode?> ModelsRequestAsync(JsonNode? p)
+    {
+        var models = await ModelsAsync(p.Str("cwd") ?? Directory.GetCurrentDirectory());
+        return new JsonObject
+        {
+            ["models"] = ModelList(models),
+            ["currentModelId"] = models.Any(m => m.Id == DefaultModel) ? DefaultModel : null,
+        };
     }
 
     private async Task<JsonNode?> LoadAsync(JsonNode? p)
@@ -209,13 +221,15 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
     private static JsonObject ModelsJson(IReadOnlyList<ModelEntry> models, string? current) => new()
     {
         ["currentModelId"] = current,
-        ["availableModels"] = new JsonArray(models.Select(m =>
-        {
-            var o = new JsonObject { ["modelId"] = m.Id, ["name"] = m.Name };
-            if (m.Usage is not null) o["_meta"] = new JsonObject { ["copilotUsage"] = m.Usage };
-            return (JsonNode)o;
-        }).ToArray()),
+        ["availableModels"] = ModelList(models),
     };
+
+    private static JsonArray ModelList(IReadOnlyList<ModelEntry> models) => new(models.Select(m =>
+    {
+        var o = new JsonObject { ["modelId"] = m.Id, ["name"] = m.Name };
+        if (m.Usage is not null) o["_meta"] = new JsonObject { ["copilotUsage"] = m.Usage };
+        return (JsonNode)o;
+    }).ToArray());
 
     private static string PromptText(JsonArray? blocks)
     {

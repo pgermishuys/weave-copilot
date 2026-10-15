@@ -125,6 +125,44 @@ public class AgentTests
     }
 
     [Fact]
+    public async Task Fleet_models_lists_models_without_creating_a_session_and_shares_the_hydrafusion_gate()
+    {
+        var (wire, host, _) = Start(hydra: true);
+        var res = await wire.ResultAsync("_fleet/models", Obj());
+        var ids = res["models"]!.AsArray().Select(m => m.Str("modelId")).ToList();
+        Assert.Equal(["gpt-5-mini", "other", "hydrafusion"], ids);
+        Assert.Equal("gpt-5-mini", res.Str("currentModelId"));
+        Assert.Null(host.CreatedModel);
+        Assert.Equal(0, host.Creates);
+        var again = await wire.ResultAsync("session/new", Obj(("cwd", "/w")));
+        Assert.Equal(1, host.HydraProbes); // cached: one probe for both requests
+        Assert.Contains("hydrafusion", again["models"]!["availableModels"]!.AsArray().Select(m => m.Str("modelId")));
+        await wire.CloseAsync();
+
+        var (wire2, host2, _) = Start(hydra: false);
+        var plain = await wire2.ResultAsync("_fleet/models", Obj());
+        Assert.DoesNotContain("hydrafusion", plain["models"]!.AsArray().Select(m => m.Str("modelId")));
+        Assert.Equal(0, host2.HydraProbes);
+        await wire2.CloseAsync();
+    }
+
+    [Fact]
+    public async Task Null_fields_are_omitted_from_notifications()
+    {
+        var (wire, host, _) = Start();
+        await wire.ResultAsync("session/new", Obj(("cwd", "/w")));
+        host.Session.OnSend = (s, _) => s.Raise(
+            Ev.Make("assistant.fusion_phase_completed", """{"fusionId":"f","phaseId":"p","phaseKind":"primary","role":"solver","model":"m","pattern":"single","status":"succeeded","durationMs":5,"conversationScope":"root","content":"c","usage":{"cachedTokens":0,"inputTokens":0,"outputTokens":0,"requestCount":1,"totalNanoAiu":0}}"""),
+            Ev.Make("assistant.fusion_phase_started", """{"fusionId":"f","phaseId":"p","phaseKind":"primary","role":"solver","model":"m","pattern":"single","conversationScope":"root"}"""),
+            Ev.Idle());
+        await wire.ResultAsync("session/prompt", Obj(("sessionId", "s-1"), ("prompt", new JsonArray(Obj(("type", "text"), ("text", "go"))))));
+        var fusion = wire.Notifications.Where(n => n.Str("method") == "_fleet/fusion").Select(n => n["params"]!.AsObject()).ToList();
+        Assert.NotEmpty(fusion);
+        Assert.All(fusion, f => Assert.DoesNotContain(f, kv => kv.Value is null));
+        await wire.CloseAsync();
+    }
+
+    [Fact]
     public async Task Load_replays_history_before_responding()
     {
         var (wire, host, _) = Start();

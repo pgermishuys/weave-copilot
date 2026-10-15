@@ -55,11 +55,25 @@ public class EventMapperTests
         var live = Run(m, Ev.ToolStart("t1", "view", """{"path":"/x"}"""), Ev.Delta("m1", "hi"), Ev.Message("m1", "hi"), Ev.ToolDone("t1", true, "ok"));
         Assert.Equal(["tool_call", "agent_message_chunk", "tool_call_update"], live.Select(Kind));
 
-        var replay = Run(m, Ev.ToolStart("t1", "view", """{"path":"/x"}""", fusion: "f1:commit"), Ev.Message("m9", "hi", fusion: "f1:commit"),
+        var replay = Run(m, Ev.ToolStart("t1", "view", """{"path":"/x"}""", fusion: "f1:commit"), Ev.Message("m1", "hi", fusion: "f1:commit"),
             Ev.ToolDone("t1", true, "ok", fusion: "f1:commit"), Ev.Usage(5, 5, fusion: "f1:commit"));
         Assert.Empty(replay);
         // the dropped replay's usage must not be counted either
         Assert.Null(((Idle)Run(m, Ev.Idle()).Single()).Usage);
+    }
+
+    [Fact]
+    public void A_commit_copy_with_no_live_twin_is_emitted()
+    {
+        var m = new EventMapper();
+        var outs = Run(m,
+            Ev.ToolStart("t1", "view", """{"path":"/x"}""", fusion: "f1:commit"), Ev.ToolDone("t1", true, "ok", fusion: "f1:commit"),
+            Ev.Message("answer", "Only here", fusion: "f1:commit"));
+        Assert.Equal(["tool_call", "tool_call_update", "agent_message_chunk"], outs.Select(Kind));
+        // a start seen live but never completed live: only the completion is taken from the commit copy
+        var m2 = new EventMapper();
+        var mixed = Run(m2, Ev.ToolStart("t2", "view", """{"path":"/x"}"""), Ev.ToolStart("t2", "view", """{"path":"/x"}""", fusion: "f1:commit"), Ev.ToolDone("t2", true, "ok", fusion: "f1:commit"));
+        Assert.Equal(["tool_call", "tool_call_update"], mixed.Select(Kind));
     }
 
     [Fact]
