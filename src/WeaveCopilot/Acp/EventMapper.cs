@@ -11,6 +11,8 @@ public sealed record Update(JsonObject Body) : AgentOutput;
 public sealed record Fusion(JsonObject Params) : AgentOutput;
 /// <summary>The session went idle: the running prompt is over.</summary>
 public sealed record Idle(bool Aborted, JsonObject? Usage) : AgentOutput;
+/// <summary>A tool that may have changed Copilot's todo list finished: the agent reads the list again.</summary>
+public sealed record TodosMaybeChanged : AgentOutput;
 /// <summary>The session reported an error: fail the running prompt with this text.</summary>
 public sealed record Failure(string Message) : AgentOutput;
 
@@ -27,6 +29,7 @@ public sealed class EventMapper(string? cwd = null, bool history = false)
     private readonly HashSet<string> _liveToolDones = [];
     private readonly HashSet<string> _streamedReasoning = [];
     private readonly HashSet<string> _toolsSeen = [];
+    private readonly HashSet<string> _sqlCalls = [];            // Copilot keeps its todo list in a `todos` table it writes with the sql tool
     private readonly Dictionary<string, int> _phaseIndex = [];
     private long _in, _out, _cacheRead, _cacheWrite, _reasoning;
     private long _nanoAiu;                                       // credits the turn's own calls reported, in nano-AIU
@@ -64,10 +67,12 @@ public sealed class EventMapper(string? cwd = null, bool history = false)
                 yield return Chunk("agent_thought_chunk", r.Data.Content);
                 break;
             case ToolExecutionStartEvent ts:
+                if (ts.Data.ToolName == "sql" && ts.Data.ToolCallId is { } sqlId) _sqlCalls.Add(sqlId);
                 yield return ToolStart(ts.Data);
                 break;
             case ToolExecutionCompleteEvent tc:
                 foreach (var o in ToolComplete(tc.Data)) yield return o;
+                if (!history && tc.Data.ToolCallId is { } doneId && _sqlCalls.Remove(doneId)) yield return new TodosMaybeChanged();
                 break;
             case SessionUsageInfoEvent ui when !history:
                 yield return new Update(new JsonObject { ["sessionUpdate"] = "usage_update", ["used"] = ui.Data.CurrentTokens, ["size"] = ui.Data.TokenLimit });
