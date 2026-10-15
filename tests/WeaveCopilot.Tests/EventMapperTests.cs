@@ -174,9 +174,10 @@ public class EventMapperTests
     public void History_replays_the_fusion_events_the_cli_kept_numbering_passes_that_have_no_start_event()
     {
         var outs = Run(new EventMapper(history: true),
-            Ev.Make("user.message", """{"content":"add a test"}"""), Resolved("cascade"),
+            Resolved("cascade"), Ev.Make("user.message", """{"content":"add a test"}"""),
             PhaseDone("f1:phase:0", "primary", "solver", "model-a", "succeeded"), Ev.ToolStart("t1", "bash", """{"command":"ls"}"""),
             PhaseDone("f1:judge", "judge", "judge", "model-b", "succeeded", verdict: "accept"), Completed("cascade"), Ev.Usage(1, 1), Ev.Idle());
+        // the CLI logs the route before the user's message; the turn row still comes after it, ahead of the first pass
         Assert.Equal(["user_message_chunk", "_resolved", "_phase_completed", "tool_call", "_phase_completed", "_completed"],
             outs.Select(o => o is Fusion f ? "_" + f.Params.Str("event") : Kind(o)));
         var passes = outs.OfType<Fusion>().Where(f => f.Params.Str("event") == "phase_completed").Select(f => f.Params).ToList();

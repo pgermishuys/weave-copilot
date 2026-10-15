@@ -30,6 +30,7 @@ public sealed class EventMapper(string? cwd = null, bool history = false)
     private readonly Dictionary<string, int> _phaseIndex = [];
     private long _in, _out, _cacheRead, _cacheWrite, _reasoning;
     private long _nanoAiu;                                       // credits the turn's own calls reported, in nano-AIU
+    private Fusion? _heldResolved;                           // history: the CLI logs `resolved` before the user's message, so it waits for the turn's first pass
     private FusionTotals? _fusion;                               // the turn's authoritative totals, once fusion_completed arrived
 
     public IEnumerable<AgentOutput> Map(SessionEvent ev)
@@ -86,11 +87,13 @@ public sealed class EventMapper(string? cwd = null, bool history = false)
                 yield return new Idle(idle.Data.Aborted == true, TakeUsage());
                 break;
             case SessionFusionResolvedEvent fr:
-                yield return new Fusion(new JsonObject
+                var resolved = new Fusion(new JsonObject
                 {
                     ["event"] = "resolved", ["pattern"] = fr.Data.Pattern.Value, ["model"] = fr.Data.PrimaryModel, ["secondaryModel"] = fr.Data.SecondaryModel,
                     ["hint"] = fr.Data.Hint, ["status"] = "resolved", ["index"] = 0,
                 });
+                if (history) _heldResolved = resolved;
+                else yield return resolved;
                 break;
             case AssistantFusionPhaseStartedEvent ps when !history:
                 var idx = IndexOf(ps.Data.PhaseId);
@@ -101,6 +104,7 @@ public sealed class EventMapper(string? cwd = null, bool history = false)
                 });
                 break;
             case AssistantFusionPhaseCompletedEvent pc:
+                if (TakeHeld() is { } h1) yield return h1;
                 yield return new Fusion(new JsonObject
                 {
                     ["event"] = "phase_completed", ["phase"] = pc.Data.PhaseKind.Value, ["role"] = pc.Data.Role, ["model"] = pc.Data.Model,
@@ -110,6 +114,7 @@ public sealed class EventMapper(string? cwd = null, bool history = false)
                 });
                 break;
             case AssistantFusionPhaseFailedEvent pf:
+                if (TakeHeld() is { } h2) yield return h2;
                 yield return new Fusion(new JsonObject
                 {
                     ["event"] = "phase_completed", ["phase"] = pf.Data.PhaseKind.Value, ["role"] = pf.Data.Role, ["model"] = pf.Data.Model,
@@ -119,6 +124,7 @@ public sealed class EventMapper(string? cwd = null, bool history = false)
                 });
                 break;
             case SessionFusionCompletedEvent fc:
+                if (TakeHeld() is { } h3) yield return h3;
                 if (!history)
                     _fusion = new FusionTotals(fc.Data.InputTokens, fc.Data.OutputTokens, fc.Data.CachedTokens, fc.Data.CacheWriteTokens ?? 0, fc.Data.RequestCount, fc.Data.TotalNanoAiu);
                 yield return new Fusion(new JsonObject
@@ -132,6 +138,8 @@ public sealed class EventMapper(string? cwd = null, bool history = false)
                 break;
         }
     }
+
+    private Fusion? TakeHeld() { var h = _heldResolved; _heldResolved = null; return h; }
 
     private bool IsLiveTwinSeen(SessionEvent ev) => ev switch
     {
