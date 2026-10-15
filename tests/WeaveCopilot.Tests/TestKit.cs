@@ -91,6 +91,8 @@ public sealed class FakeSession(string id) : ICopilotSession
     private Action<SessionEvent>? _handler;
     public string Id { get; } = id;
     public List<(string Prompt, bool Immediate)> Sent { get; } = [];
+    public List<ImageData> Images { get; } = [];
+    public List<TodoRow> Todos { get; } = [];
     public List<string> Models { get; } = [];
     public bool Aborted { get; private set; }
     public List<SessionEvent> History { get; } = [];
@@ -99,7 +101,8 @@ public sealed class FakeSession(string id) : ICopilotSession
 
     public void Raise(params SessionEvent[] events) { foreach (var e in events) _handler?.Invoke(e); }
     public IDisposable Subscribe(Action<SessionEvent> handler) { _handler = handler; return new Noop(); }
-    public Task SendAsync(string prompt, bool immediate) { Sent.Add((prompt, immediate)); OnSend?.Invoke(this, prompt); return Task.CompletedTask; }
+    public Task SendAsync(string prompt, bool immediate, IReadOnlyList<ImageData>? images = null) { Sent.Add((prompt, immediate)); Images.AddRange(images ?? []); OnSend?.Invoke(this, prompt); return Task.CompletedTask; }
+    public Task<IReadOnlyList<TodoRow>> ReadTodosAsync() => Task.FromResult<IReadOnlyList<TodoRow>>([.. Todos]);
     public Task AbortAsync() { Aborted = true; Raise(Ev.Idle(aborted: true)); return Task.CompletedTask; }
     public Task SetModelAsync(string modelId) { Models.Add(modelId); return Task.CompletedTask; }
     public Task<IReadOnlyList<SessionEvent>> GetEventsAsync() => Task.FromResult<IReadOnlyList<SessionEvent>>(History);

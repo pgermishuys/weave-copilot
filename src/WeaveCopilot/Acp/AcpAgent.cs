@@ -20,6 +20,7 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
         public string? Model { get; set; }
         public TaskCompletionSource<AgentOutput>? Turn;
         public bool CancelRequested { get; set; }
+        public string? LastTodos { get; set; }
         public IDisposable? Subscription { get; set; }
     }
 
@@ -55,6 +56,7 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
                 "_fleet/auth/attempt" => AttemptStatus(p),
                 "_fleet/auth/cancel" => CancelLogin(p),
                 "_fleet/auth/logout" => await LogoutAsync(),
+                "_fleet/todos" => await TodosAsync(p),
                 _ => throw new JsonRpcException(-32601, $"Method not found: {method}"),
             };
         }
@@ -112,7 +114,7 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
             ["agentCapabilities"] = new JsonObject
             {
                 ["loadSession"] = true,
-                ["promptCapabilities"] = new JsonObject { ["image"] = false, ["embeddedContext"] = true },
+                ["promptCapabilities"] = new JsonObject { ["image"] = true, ["embeddedContext"] = true },
             },
             ["agentInfo"] = new JsonObject { ["name"] = "weave-copilot", ["version"] = version },
             ["_meta"] = new JsonObject { ["cliVersion"] = cli },
@@ -145,6 +147,7 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
         var cwd = p.Str("cwd") ?? Directory.GetCurrentDirectory();
         var models = await ModelsAsync(cwd);
         var s = await Register(await host.ResumeAsync(id, cwd, Permission), cwd, null, replay: true);
+        await PublishTodosAsync(id, s);
         return new JsonObject { ["models"] = ModelsJson(models, s.Model) };
     }
 
@@ -184,21 +187,48 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
         {
             case Update u: rpc.SendNotification("session/update", new JsonObject { ["sessionId"] = sessionId, ["update"] = u.Body }); break;
             case Fusion f: f.Params["sessionId"] = sessionId; rpc.SendNotification("_fleet/fusion", f.Params); break;
+            case TodosMaybeChanged: _ = PublishTodosAsync(sessionId, s); break;
             case Idle or Failure: s.Turn?.TrySetResult(o); break;
         }
     }
+
+    /// <summary>Reads Copilot's todo list and tells the client as an ACP `plan` update, when it differs from the last one sent.</summary>
+    private async Task PublishTodosAsync(string sessionId, Sess s)
+    {
+        try
+        {
+            var entries = await ReadEntriesAsync(s);
+            var key = entries.ToJsonString();
+            if (key == (s.LastTodos ?? "[]")) return;
+            s.LastTodos = key;
+            rpc.SendNotification("session/update", new JsonObject { ["sessionId"] = sessionId, ["update"] = new JsonObject { ["sessionUpdate"] = "plan", ["entries"] = entries } });
+        }
+        catch (Exception e) when (e is not OperationCanceledException) { /* a list that can't be read stays as it was */ }
+    }
+
+    private static async Task<JsonArray> ReadEntriesAsync(Sess s) => new(
+        (await s.Session.ReadTodosAsync()).Select(t => (JsonNode)new JsonObject
+        {
+            ["content"] = t.Title,
+            ["priority"] = "medium",
+            ["status"] = t.Status switch { "done" or "completed" => "completed", "in_progress" => "in_progress", _ => "pending" },
+        }).ToArray());
+
+    private async Task<JsonNode?> TodosAsync(JsonNode? p) => new JsonObject { ["entries"] = await ReadEntriesAsync(Find(p)) };
 
     private async Task<JsonNode?> PromptAsync(JsonNode? p)
     {
         var s = Find(p);
         var text = PromptText(p?["prompt"] as JsonArray);
+        var images = PromptImages(p?["prompt"] as JsonArray);
+        if (text.Length == 0 && images.Count > 0) text = "(see the attached image)";
         var turn = new TaskCompletionSource<AgentOutput>(TaskCreationOptions.RunContinuationsAsynchronously);
         if (Interlocked.CompareExchange(ref s.Turn, turn, null) is not null) throw new JsonRpcException(-32000, "A prompt is already running for this session");
         s.CancelRequested = false;
         using var stop = new CancellationTokenSource();
         try
         {
-            await s.Session.SendAsync(text, immediate: false);
+            await s.Session.SendAsync(text, immediate: false, images);
             _ = Task.Run(() => HeartbeatAsync(turn, stop.Token));
             var end = await turn.Task;
             if (end is Failure f) throw new JsonRpcException(-32000, f.Message);
@@ -276,6 +306,9 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
         if (m.Usage is not null) o["_meta"] = new JsonObject { ["copilotUsage"] = m.Usage };
         return (JsonNode)o;
     }).ToArray());
+
+    private static IReadOnlyList<ImageData> PromptImages(JsonArray? blocks) =>
+        [.. (blocks ?? []).Where(b => b.Str("type") == "image" && b.Str("data") is { Length: > 0 }).Select(b => new ImageData(b.Str("data")!, b.Str("mimeType") ?? "image/png", b.Str("uri")))];
 
     private static string PromptText(JsonArray? blocks)
     {

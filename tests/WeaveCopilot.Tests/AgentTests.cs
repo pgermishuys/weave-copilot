@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using WeaveCopilot.Acp;
+using WeaveCopilot.Sdk;
 using Xunit;
 
 namespace WeaveCopilot.Tests;
@@ -24,7 +25,7 @@ public class AgentTests
         var init = await wire.ResultAsync("initialize", Obj(("protocolVersion", 1)));
         Assert.Equal(1, init["protocolVersion"]!.GetValue<int>());
         Assert.True(init["agentCapabilities"]!["loadSession"]!.GetValue<bool>());
-        Assert.False(init["agentCapabilities"]!["promptCapabilities"]!["image"]!.GetValue<bool>());
+        Assert.True(init["agentCapabilities"]!["promptCapabilities"]!["image"]!.GetValue<bool>());
         Assert.Equal("weave-copilot", init["agentInfo"]!.Str("name"));
         Assert.Equal("9.9.9", init["_meta"]!.Str("cliVersion"));
 
@@ -213,6 +214,38 @@ public class AgentTests
         var ids = res["models"]!["availableModels"]!.AsArray().Select(m => m.Str("modelId")).ToList();
         Assert.Equal(offered, ids.Contains("hydrafusion"));
         Assert.Equal(flag ? 1 : 0, host.HydraProbes);
+        await wire.CloseAsync();
+    }
+
+    [Fact]
+    public async Task Prompt_images_reach_copilot_as_attachments_and_an_image_alone_still_sends_text()
+    {
+        var (wire, host, _) = Start();
+        await wire.ResultAsync("session/new", Obj(("cwd", "/w")));
+        host.Session.OnSend = (s, _) => s.Raise(Ev.Idle());
+        await wire.ResultAsync("session/prompt", Obj(("sessionId", "s-1"), ("prompt", new JsonArray(Obj(("type", "image"), ("data", "iVBORw0="), ("mimeType", "image/png"))))));
+        var image = Assert.Single(host.Session.Images);
+        Assert.Equal(("iVBORw0=", "image/png"), (image.Base64, image.MimeType));
+        Assert.NotEmpty(host.Session.Sent.Single().Prompt);
+        await wire.CloseAsync();
+    }
+
+    [Fact]
+    public async Task A_finished_sql_call_publishes_copilots_todo_list_as_a_plan_update_once()
+    {
+        var (wire, host, _) = Start();
+        await wire.ResultAsync("session/new", Obj(("cwd", "/w")));
+        host.Session.Todos.AddRange([new TodoRow("Pack the basket", "done"), new TodoRow("Pick a spot", "in_progress"), new TodoRow("Bring water", "pending")]);
+        host.Session.OnSend = (s, _) => s.Raise(Ev.ToolStart("c1", "sql", "{}"), Ev.ToolDone("c1", true, "3 row(s) inserted"), Ev.ToolStart("c2", "sql", "{}"), Ev.ToolDone("c2", true, "ok"), Ev.Idle());
+        await wire.ResultAsync("session/prompt", Obj(("sessionId", "s-1"), ("prompt", new JsonArray(Obj(("type", "text"), ("text", "plan a picnic"))))));
+        await Task.Delay(300);
+        var plans = wire.Notifications.Select(n => n["params"]!["update"]!).Where(u => u.Str("sessionUpdate") == "plan").ToList();
+        var plan = Assert.Single(plans);
+        Assert.Equal(["completed", "in_progress", "pending"], plan["entries"]!.AsArray().Select(e => e.Str("status")));
+        Assert.Equal("Pack the basket", plan["entries"]![0]!.Str("content"));
+
+        var asked = await wire.ResultAsync("_fleet/todos", Obj(("sessionId", "s-1")));
+        Assert.Equal(3, asked["entries"]!.AsArray().Count);
         await wire.CloseAsync();
     }
 }

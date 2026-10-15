@@ -100,8 +100,15 @@ public sealed class SdkHost(string cliPath, bool hydraFusion) : ICopilotHost
     {
         public string Id => s.SessionId;
         public IDisposable Subscribe(Action<SessionEvent> handler) => s.On(handler);
-        public Task SendAsync(string prompt, bool immediate) =>
-            s.SendAsync(new MessageOptions { Prompt = prompt, Mode = immediate ? "immediate" : null });
+        public Task SendAsync(string prompt, bool immediate, IReadOnlyList<ImageData>? images = null) =>
+            s.SendAsync(new MessageOptions
+            {
+                Prompt = prompt,
+                Mode = immediate ? "immediate" : null,
+                Attachments = images is { Count: > 0 } ? [.. images.Select(i => (Attachment)new AttachmentBlob { Data = i.Base64, MimeType = i.MimeType, DisplayName = i.Name })] : null,
+            });
+        public async Task<IReadOnlyList<TodoRow>> ReadTodosAsync() =>
+            (await s.Rpc.Plan.ReadSqlTodosAsync()).Rows.Select(r => new TodoRow(r.Title ?? r.Description ?? r.Id ?? "", r.Status ?? "pending")).ToList();
         public Task AbortAsync() => s.AbortAsync();
         public Task SetModelAsync(string modelId) => s.SetModelAsync(modelId);
         public async Task<IReadOnlyList<SessionEvent>> GetEventsAsync() => await s.GetEventsAsync();
