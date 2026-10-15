@@ -13,6 +13,29 @@ public sealed record ImageData(string Base64, string MimeType, string? Name);
 
 public delegate Task<PermissionDecision> PermissionCallback(string sessionId, PermissionRequest request);
 
+/// <summary>An HTTP MCP server the client asked for in <c>session/new</c> or <c>session/load</c>. Headers can carry a credential: never log them.</summary>
+public sealed record AcpMcpServer(string Name, string Url, IReadOnlyDictionary<string, string> Headers)
+{
+    /// <summary>The <c>http</c> servers of an ACP <c>mcpServers</c> array (<c>{type, name, url, headers: [{name, value}]}</c>). Stdio servers and malformed entries are skipped.</summary>
+    public static IReadOnlyList<AcpMcpServer> Parse(System.Text.Json.Nodes.JsonNode? servers)
+    {
+        var list = new List<AcpMcpServer>();
+        if (servers is not System.Text.Json.Nodes.JsonArray array) return list;
+        foreach (var entry in array)
+        {
+            if (entry?["type"]?.GetValue<string>() != "http") continue;
+            if (entry["name"]?.GetValue<string>() is not { Length: > 0 } name || entry["url"]?.GetValue<string>() is not { Length: > 0 } url) continue;
+            var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (entry["headers"] is System.Text.Json.Nodes.JsonArray pairs)
+                foreach (var h in pairs)
+                    if (h?["name"]?.GetValue<string>() is { Length: > 0 } hn && h["value"]?.GetValue<string>() is { } hv) headers[hn] = hv;
+            list.RemoveAll(s => s.Name == name);
+            list.Add(new AcpMcpServer(name, url, headers));
+        }
+        return list;
+    }
+}
+
 /// <summary>Small seam around one Copilot SDK session so the ACP agent is testable without the CLI.</summary>
 public interface ICopilotSession : IAsyncDisposable
 {
@@ -36,8 +59,8 @@ public interface ICopilotHost : IAsyncDisposable
     Task<IReadOnlyList<ModelEntry>> ListModelsAsync();
     /// <summary>Who the CLI is signed in as, asked of the CLI so it reflects a sign-in made a moment ago.</summary>
     Task<AuthStatus> AuthStatusAsync();
-    Task<ICopilotSession> CreateAsync(string cwd, string? model, PermissionCallback permission);
-    Task<ICopilotSession> ResumeAsync(string sessionId, string cwd, PermissionCallback permission);
+    Task<ICopilotSession> CreateAsync(string cwd, string? model, PermissionCallback permission, IReadOnlyList<AcpMcpServer>? mcp = null);
+    Task<ICopilotSession> ResumeAsync(string sessionId, string cwd, PermissionCallback permission, IReadOnlyList<AcpMcpServer>? mcp = null);
     /// <summary>Cheap create-only probe: can a session be created with the synthetic hydrafusion model?</summary>
     Task<bool> ProbeHydraFusionAsync(string cwd);
 }

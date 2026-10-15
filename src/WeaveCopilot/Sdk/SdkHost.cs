@@ -57,19 +57,26 @@ public sealed class SdkHost(string cliPath, bool hydraFusion) : ICopilotHost
     private Func<PermissionRequest, PermissionInvocation, Task<PermissionDecision>> Wrap(PermissionCallback cb) =>
         (req, inv) => cb(inv.SessionId, req);
 
-    public async Task<ICopilotSession> CreateAsync(string cwd, string? model, PermissionCallback permission)
+    public async Task<ICopilotSession> CreateAsync(string cwd, string? model, PermissionCallback permission, IReadOnlyList<AcpMcpServer>? mcp = null)
     {
         var config = new SessionConfig { Model = model, WorkingDirectory = cwd, Streaming = true, OnPermissionRequest = Wrap(permission) };
         Gate(config);
+        config.McpServers = ToSdk(mcp);
         return new SdkSession(await _client.CreateSessionAsync(config));
     }
 
-    public async Task<ICopilotSession> ResumeAsync(string sessionId, string cwd, PermissionCallback permission)
+    public async Task<ICopilotSession> ResumeAsync(string sessionId, string cwd, PermissionCallback permission, IReadOnlyList<AcpMcpServer>? mcp = null)
     {
         var config = new ResumeSessionConfig { WorkingDirectory = cwd, Streaming = true, OnPermissionRequest = Wrap(permission) };
         Gate(config);
+        config.McpServers = ToSdk(mcp);
         return new SdkSession(await _client.ResumeSessionAsync(sessionId, config));
     }
+
+    private static Dictionary<string, McpServerConfig>? ToSdk(IReadOnlyList<AcpMcpServer>? servers) =>
+        servers is { Count: > 0 }
+            ? servers.ToDictionary(s => s.Name, s => (McpServerConfig)new McpHttpServerConfig { Url = s.Url, Headers = s.Headers.ToDictionary(h => h.Key, h => h.Value) })
+            : null;
 
     /// <summary>HydraFusion is opt-in: only with --hydrafusion do we turn on experimental mode and its single rollout flag.</summary>
     private void Gate(SessionConfigBase config)
