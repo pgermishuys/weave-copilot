@@ -126,8 +126,9 @@ public sealed class FakeHost : ICopilotHost
     public AuthStatus Auth { get; set; } = new(true, "user", "https://github.com", "octo-demo", null);
     public Task<AuthStatus> AuthStatusAsync() => Task.FromResult(Auth);
     public Task<IReadOnlyList<ModelEntry>> ListModelsAsync() => Task.FromResult<IReadOnlyList<ModelEntry>>(Models);
-    public Task<ICopilotSession> CreateAsync(string cwd, string? model, PermissionCallback permission) { Creates++; CreatedModel = model; Permission = permission; return Task.FromResult<ICopilotSession>(Session); }
-    public Task<ICopilotSession> ResumeAsync(string sessionId, string cwd, PermissionCallback permission) { Permission = permission; return Task.FromResult<ICopilotSession>(Session); }
+    public IReadOnlyList<AcpMcpServer>? Mcp;
+    public Task<ICopilotSession> CreateAsync(string cwd, string? model, PermissionCallback permission, IReadOnlyList<AcpMcpServer>? mcp = null) { Mcp = mcp; Creates++; CreatedModel = model; Permission = permission; return Task.FromResult<ICopilotSession>(Session); }
+    public Task<ICopilotSession> ResumeAsync(string sessionId, string cwd, PermissionCallback permission, IReadOnlyList<AcpMcpServer>? mcp = null) { Mcp = mcp; Permission = permission; return Task.FromResult<ICopilotSession>(Session); }
     public Task<bool> ProbeHydraFusionAsync(string cwd) { HydraProbes++; return Task.FromResult(HydraProbeResult); }
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }

@@ -37,6 +37,29 @@ public class AgentTests
         await wire.CloseAsync();
     }
 
+    private static JsonArray McpList() => new()
+    {
+        Obj(("type", "http"), ("name", "fleet"), ("url", "http://127.0.0.1:6262/mcp"),
+            ("headers", new JsonArray(Obj(("name", "Authorization"), ("value", "Bearer t0ken"))))),
+        Obj(("type", "stdio"), ("name", "local"), ("command", "x"), ("args", new JsonArray())),
+    };
+
+    [Fact]
+    public async Task Session_new_and_load_pass_http_mcp_servers_with_their_headers_and_skip_stdio()
+    {
+        var (wire, host, _) = Start();
+        await wire.ResultAsync("initialize", Obj(("protocolVersion", 1)));
+        await wire.ResultAsync("session/new", Obj(("cwd", "/w"), ("mcpServers", McpList())));
+        var created = Assert.Single(host.Mcp!);
+        Assert.Equal(("fleet", "http://127.0.0.1:6262/mcp"), (created.Name, created.Url));
+        Assert.Equal("Bearer t0ken", created.Headers["Authorization"]);
+
+        host.Mcp = null;
+        await wire.ResultAsync("session/load", Obj(("sessionId", "s-1"), ("cwd", "/w"), ("mcpServers", McpList())));
+        Assert.Equal("Bearer t0ken", Assert.Single(host.Mcp!).Headers["authorization"]);
+        await wire.CloseAsync();
+    }
+
     [Fact]
     public async Task Prompt_streams_updates_and_returns_end_turn_with_usage()
     {

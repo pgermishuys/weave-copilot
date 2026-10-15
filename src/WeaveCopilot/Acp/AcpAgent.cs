@@ -126,7 +126,7 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
         var cwd = p.Str("cwd") ?? Directory.GetCurrentDirectory();
         var models = await ModelsAsync(cwd);
         var model = models.Any(m => m.Id == DefaultModel) ? DefaultModel : null;
-        var s = await Register(await host.CreateAsync(cwd, model, Permission), cwd, model ?? models.FirstOrDefault()?.Id);
+        var s = await Register(await host.CreateAsync(cwd, model, Permission, AcpMcpServer.Parse(p?["mcpServers"])), cwd, model ?? models.FirstOrDefault()?.Id);
         return new JsonObject { ["sessionId"] = s.Session.Id, ["models"] = ModelsJson(models, s.Model) };
     }
 
@@ -146,7 +146,7 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
         var id = p.Str("sessionId") ?? throw new JsonRpcException(-32602, "sessionId is required");
         var cwd = p.Str("cwd") ?? Directory.GetCurrentDirectory();
         var models = await ModelsAsync(cwd);
-        var s = await Register(await host.ResumeAsync(id, cwd, Permission), cwd, null, replay: true);
+        var s = await Register(await host.ResumeAsync(id, cwd, Permission, AcpMcpServer.Parse(p?["mcpServers"])), cwd, null, replay: true);
         await PublishTodosAsync(id, s);
         return new JsonObject { ["models"] = ModelsJson(models, s.Model) };
     }
