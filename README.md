@@ -49,6 +49,16 @@ HydraFusion fires tool and message events live and again at commit with `fusion.
 
 Null fields are omitted from every message written to stdout (raw tool `rawInput` / `rawOutput` are passed through as they are). The stop reason comes from the session going idle, not from turn events.
 
+## Releases
+
+Pushing a tag `vX.Y.Z` runs `.github/workflows/release.yml`, which builds six self-contained binaries and publishes a GitHub Release. Fleet downloads these, so the names are a contract:
+
+- `weave-copilot-X.Y.Z-<rid>.zip` for `win-x64` and `win-arm64` (holds `weave-copilot.exe`, `THIRD-PARTY-NOTICES`)
+- `weave-copilot-X.Y.Z-<rid>.tar.gz` for `linux-x64`, `linux-arm64`, `osx-x64`, `osx-arm64` (holds `weave-copilot`, `THIRD-PARTY-NOTICES`)
+- `SHA256SUMS`, in `sha256sum` format, covering every archive
+
+The tag sets the version (`weave-copilot --version` prints it). The Copilot CLI is not in the archives; Fleet fetches it from GitHub's own releases. Running the workflow by hand with a `version` input only builds the archives and uploads them as a workflow artifact.
+
 ## Build, test, publish
 
 ```
