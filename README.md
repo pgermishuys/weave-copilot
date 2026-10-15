@@ -24,7 +24,7 @@ weave-copilot --version        # prints "weave-copilot 0.1.0", exits 0, does not
 | `session/load` `{sessionId, cwd, mcpServers}` | Resumes, replays history as `session/update` (`user_message_chunk`, `agent_message_chunk`, `tool_call`, `tool_call_update`; no thoughts), then responds `{models}`. |
 | `session/prompt` `{sessionId, prompt:[...]}` | Text blocks (plus `resource` / `resource_link`, flattened to text). Responds `{stopReason:"end_turn"\|"cancelled", usage?}` when the session goes idle. A session error (for example `fusion routing transport failed`) responds with a JSON-RPC error (code -32000) whose message is the readable text. It never hangs. |
 | `session/cancel` (notification) | Aborts; the prompt returns `cancelled`. |
-| `_fleet/steer` `{sessionId, prompt}` | Sends with delivery mode `immediate` (interjects the running turn). Responds `{}`. |
+| `_fleet/steer` `{sessionId, prompt}` | Sends with delivery mode `immediate` (interjects the running turn). Responds `{}`. Only valid while a `session/prompt` is in flight: with no running turn it responds with error -32001 "No turn is running; send the text as a prompt instead" (queue it as a normal prompt). |
 
 Agent to client: `session/request_permission` `{sessionId, toolCall:{toolCallId, title (e.g. "Write src/foo.ts"), kind, status, rawInput, locations, content?}, options:[allow_once, allow_always, reject_once]}`. `allow_once` approves once, `allow_always` approves for the session (write, read, shell commands, MCP tool; otherwise once), `reject_once` and a cancelled outcome deny.
 

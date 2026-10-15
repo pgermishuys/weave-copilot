@@ -23,7 +23,7 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
         public IDisposable? Subscription { get; set; }
     }
 
-    private readonly Dictionary<string, Sess> _sessions = [];
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, Sess> _sessions = [];
     private IReadOnlyList<ModelEntry>? _models;
     private Task<bool>? _hydraProbe;
 
@@ -191,9 +191,11 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
         try { await s.Session.AbortAsync(); } catch (Exception e) { s.Turn?.TrySetResult(new Failure("Cancel failed: " + e.Message)); }
     }
 
+    /// <summary>Only valid while a `session/prompt` is in flight; otherwise nobody would wait for the turn it starts. -32001 tells the caller to send it as a normal prompt.</summary>
     private async Task<JsonNode?> SteerAsync(JsonNode? p)
     {
         var s = Find(p);
+        if (s.Turn is null) throw new JsonRpcException(-32001, "No turn is running; send the text as a prompt instead");
         await s.Session.SendAsync(p.Str("prompt") ?? PromptText(p?["prompt"] as JsonArray), immediate: true);
         return new JsonObject();
     }

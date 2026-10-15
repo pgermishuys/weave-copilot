@@ -17,11 +17,16 @@ public static class PermissionMapper
         ["sessionId"] = sessionId, ["toolCall"] = ToolCall(r, cwd), ["options"] = Options(),
     };
 
+    private static long _synthetic;
+
+    /// <summary>ACP forbids a null toolCallId, so requests the SDK gives none for get a unique "perm-N".</summary>
+    private static string IdOrSynthetic(string? id) => string.IsNullOrEmpty(id) ? "perm-" + Interlocked.Increment(ref _synthetic) : id;
+
     public static JsonObject ToolCall(PermissionRequest r, string? cwd)
     {
         JsonObject Base(string? id, string title, string kind, JsonObject? raw, string? path = null)
         {
-            var o = new JsonObject { ["toolCallId"] = id, ["title"] = title, ["kind"] = kind, ["status"] = "pending", ["rawInput"] = raw };
+            var o = new JsonObject { ["toolCallId"] = IdOrSynthetic(id), ["title"] = title, ["kind"] = kind, ["status"] = "pending", ["rawInput"] = raw };
             if (path is not null) o["locations"] = new JsonArray(new JsonObject { ["path"] = path });
             return o;
         }

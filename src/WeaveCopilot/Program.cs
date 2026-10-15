@@ -21,7 +21,7 @@ try { host = new SdkHost(SdkHost.ResolveCli(cliArg), hydra); }
 catch (Exception e) { Console.Error.WriteLine("weave-copilot: " + e.Message); return 1; }
 
 // stdout carries only protocol lines; everything else goes to stderr.
-var rpc = new JsonRpcConnection(Console.In, new StreamWriter(Console.OpenStandardOutput(), new System.Text.UTF8Encoding(false)) { NewLine = "\n" });
+var rpc = new JsonRpcConnection(new StreamReader(Console.OpenStandardInput(), new System.Text.UTF8Encoding(false)), new StreamWriter(Console.OpenStandardOutput(), new System.Text.UTF8Encoding(false)) { NewLine = "\n" });
 new AcpAgent(rpc, host, hydra, Version(), msg => { Console.Error.WriteLine("weave-copilot: " + msg); host.RestoreSettings(); Environment.Exit(1); }).Attach();
 // Never leave the Copilot CLI child behind: stop it on SIGTERM/SIGINT as well as on stdin EOF.
 using var term = System.Runtime.InteropServices.PosixSignalRegistration.Create(System.Runtime.InteropServices.PosixSignal.SIGTERM, ctx => { ctx.Cancel = true; host.DisposeAsync().AsTask().Wait(3000); Environment.Exit(0); });

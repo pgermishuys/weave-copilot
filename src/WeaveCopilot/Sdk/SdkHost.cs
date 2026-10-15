@@ -18,10 +18,18 @@ public sealed class SdkHost(string cliPath, bool hydraFusion) : ICopilotHost
         var candidate = explicitPath ?? Environment.GetEnvironmentVariable("WEAVE_COPILOT_CLI");
         if (!string.IsNullOrEmpty(candidate))
             return File.Exists(candidate) ? candidate : throw new FileNotFoundException($"Copilot CLI not found at '{candidate}'");
-        var exe = OperatingSystem.IsWindows() ? "copilot.exe" : "copilot";
-        foreach (var dir in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
-            if (File.Exists(Path.Combine(dir, exe))) return Path.Combine(dir, exe);
+        if (FindOnPath(OperatingSystem.IsWindows(), Environment.GetEnvironmentVariable("PATH"), File.Exists) is { } found) return found;
         throw new FileNotFoundException("Copilot CLI not found: pass --copilot-cli <path>, set WEAVE_COPILOT_CLI, or put `copilot` on PATH");
+    }
+
+    /// <summary>First `copilot` on PATH: on Windows copilot.exe, copilot.cmd or copilot.bat (npm installs a .cmd shim), per directory in PATH order.</summary>
+    public static string? FindOnPath(bool windows, string? path, Func<string, bool> exists)
+    {
+        string[] names = windows ? ["copilot.exe", "copilot.cmd", "copilot.bat"] : ["copilot"];
+        foreach (var dir in (path ?? "").Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+            foreach (var name in names)
+                if (Path.Combine(dir, name) is var full && exists(full)) return full;
+        return null;
     }
 
     private readonly ExperimentalGuard? _guard = hydraFusion ? new ExperimentalGuard(ExperimentalGuard.DefaultHome()) : null;
