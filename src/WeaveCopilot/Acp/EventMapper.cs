@@ -46,7 +46,7 @@ public sealed class EventMapper(string? cwd = null, bool history = false)
         switch (ev)
         {
             case UserMessageEvent u when history && !string.IsNullOrEmpty(u.Data.Content):
-                yield return Chunk("user_message_chunk", u.Data.Content);
+                yield return Chunk("user_message_chunk", u.Data.Content + ImagePlaceholders(u.Data));
                 break;
             case AssistantMessageDeltaEvent d when !history && !string.IsNullOrEmpty(d.Data.DeltaContent):
                 if (d.Data.MessageId is { } mid) _liveMessages.Add(mid);
@@ -220,6 +220,15 @@ public sealed class EventMapper(string? cwd = null, bool history = false)
         _fusion = null;
         return u;
     }
+
+    /// <summary>
+    /// The Copilot CLI keeps only an asset id, the type and the name of an image attached to a message, never its bytes, so a
+    /// replayed message can't show the picture; it says one was attached instead.
+    /// </summary>
+    private static string ImagePlaceholders(UserMessageData data) => string.Concat((data.Attachments ?? [])
+        .OfType<AttachmentBlob>()
+        .Where(blob => blob.MimeType?.StartsWith("image/", StringComparison.Ordinal) == true)
+        .Select(blob => $"\n\n[Image attached: {(string.IsNullOrEmpty(blob.DisplayName) ? blob.MimeType : blob.DisplayName)}]"));
 
     private static Update Chunk(string kind, string text) => new(new JsonObject
     {
