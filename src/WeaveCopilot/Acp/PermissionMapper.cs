@@ -47,7 +47,13 @@ public static class PermissionMapper
             case PermissionRequestRead rd:
                 return Base(rd.ToolCallId, "Read " + Paths.Relative(rd.Path ?? "file", cwd), "read", new JsonObject { ["path"] = rd.Path }, rd.Path);
             case PermissionRequestMcp m:
-                return Base(m.ToolCallId, $"{m.ServerName}: {m.ToolTitle ?? m.ToolName}", "other", Json.FromElement(m.Args) as JsonObject);
+            {
+                var mcp = Base(m.ToolCallId, $"{m.ServerName}: {m.ToolTitle ?? m.ToolName}", "other", Json.FromElement(m.Args) as JsonObject);
+                // The SDK names an MCP tool "<server>-<tool>"; Fleet wants the tool's own name.
+                var prefix = m.ServerName + "-";
+                mcp["_meta"] = new JsonObject { ["toolName"] = m.ToolName is { } n && n.StartsWith(prefix, StringComparison.Ordinal) ? n[prefix.Length..] : m.ToolName };
+                return mcp;
+            }
             case PermissionRequestUrl u:
                 return Base(u.ToolCallId, "Fetch " + u.Url, "fetch", new JsonObject { ["url"] = u.Url });
             default:

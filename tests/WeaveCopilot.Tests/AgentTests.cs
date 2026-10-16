@@ -111,6 +111,13 @@ public class AgentTests
     }
 
     [Fact]
+    public void An_mcp_permission_ask_names_the_tool_without_its_servers_prefix()
+    {
+        var req = new GitHub.Copilot.PermissionRequestMcp { ServerName = "fleet", ToolName = "fleet-fleet_page_show", ToolTitle = "Show page", ToolCallId = "t1", ReadOnly = false };
+        Assert.Equal("fleet_page_show", PermissionMapper.ToolCall(req, null)["_meta"]!["toolName"]!.GetValue<string>());
+    }
+
+    [Fact]
     public void Permission_asks_without_a_tool_call_id_get_a_unique_synthetic_id()
     {
         var req = new GitHub.Copilot.PermissionRequestUrl { Url = "https://example.test", Intention = "Fetch" };

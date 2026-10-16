@@ -19,6 +19,16 @@ public class EventMapperTests
     }
 
     [Fact]
+    public void A_tool_acp_has_no_kind_for_carries_its_real_name_in_meta()
+    {
+        var outs = Run(new EventMapper("/work/demo"), Ev.ToolStart("t1", "fleet_page_show", "{}"), Ev.ToolStart("t2", "edit", "{}"));
+        var other = ((Update)outs[0]).Body;
+        Assert.Equal("other", other.Str("kind"));
+        Assert.Equal("fleet_page_show", other["_meta"]!["toolName"]!.GetValue<string>());
+        Assert.Null(((Update)outs[1]).Body["_meta"]);
+    }
+
+    [Fact]
     public void Edit_tool_becomes_tool_call_with_a_diff_and_a_completed_update()
     {
         var outs = Run(new EventMapper("/work/demo"),
