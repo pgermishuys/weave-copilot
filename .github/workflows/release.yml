@@ -27,12 +27,13 @@ jobs:
           version="${VERSION#v}"
           dotnet publish src/WeaveCopilot -r ${{ matrix.rid }} --self-contained -p:PublishSingleFile=true -p:Version="$version" -c Release -o out/${{ matrix.rid }}
           cp THIRD-PARTY-NOTICES out/${{ matrix.rid }}/THIRD-PARTY-NOTICES
+          cp LICENSE out/${{ matrix.rid }}/LICENSE
           mkdir -p dist
           name="weave-copilot-$version-${{ matrix.rid }}"
           if [[ "${{ matrix.rid }}" == win-* ]]; then
-            (cd out/${{ matrix.rid }} && zip -q "$GITHUB_WORKSPACE/dist/$name.zip" weave-copilot.exe THIRD-PARTY-NOTICES)
+            (cd out/${{ matrix.rid }} && zip -q "$GITHUB_WORKSPACE/dist/$name.zip" weave-copilot.exe LICENSE THIRD-PARTY-NOTICES)
           else
-            tar -C out/${{ matrix.rid }} -czf "dist/$name.tar.gz" weave-copilot THIRD-PARTY-NOTICES
+            tar -C out/${{ matrix.rid }} -czf "dist/$name.tar.gz" weave-copilot LICENSE THIRD-PARTY-NOTICES
           fi
       - uses: actions/upload-artifact@v4
         with:
