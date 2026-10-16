@@ -241,6 +241,9 @@ public sealed class EventMapper(string? cwd = null, bool history = false)
             ["kind"] = ToolKinds.Of(d.ToolName), ["status"] = "pending", ["rawInput"] = args,
         };
         if (path is not null) body["locations"] = new JsonArray(new JsonObject { ["path"] = path });
+        // A tool ACP has no kind for (an MCP tool): Fleet reads the real name from _meta.
+        if ((d.McpToolName ?? (body["kind"]!.GetValue<string>() == "other" ? d.ToolName : null)) is { } real)
+            body["_meta"] = new JsonObject { ["toolName"] = real };
         if (DiffOf(args, path) is { } diff) body["content"] = new JsonArray(diff);
         return new Update(body);
     }
