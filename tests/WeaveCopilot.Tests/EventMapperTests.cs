@@ -10,6 +10,15 @@ public class EventMapperTests
     private static string Kind(AgentOutput o) => ((Update)o).Body.Str("sessionUpdate")!;
 
     [Fact]
+    public void A_replayed_user_message_says_which_images_were_attached_because_the_cli_keeps_no_bytes()
+    {
+        var outs = Run(new EventMapper(history: true), Ev.Make("user.message",
+            """{"content":"What is this?","attachments":[{"type":"blob","mimeType":"image/png","displayName":"circle.png","assetId":"sha256:abc","byteLength":245},{"type":"blob","mimeType":"application/pdf","displayName":"a.pdf"}]}"""));
+        Assert.Equal("What is this?\n\n[Image attached: circle.png]", ((Update)outs.Single()).Body["content"]!["text"]!.GetValue<string>());
+        Assert.Equal("Hi", ((Update)Run(new EventMapper(history: true), Ev.Make("user.message", """{"content":"Hi"}""")).Single()).Body["content"]!["text"]!.GetValue<string>());
+    }
+
+    [Fact]
     public void Streamed_message_is_not_repeated_by_the_final_message()
     {
         var outs = Run(new EventMapper(),
