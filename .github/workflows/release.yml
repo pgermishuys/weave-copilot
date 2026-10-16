@@ -43,6 +43,9 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    # The repo's default token is read-only; creating the GitHub Release needs write access to contents.
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
