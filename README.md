@@ -67,3 +67,7 @@ dotnet publish src/WeaveCopilot -c Release -r linux-x64 -p:PublishSingleFile=tru
 ```
 
 The publish produces one self-contained `publish/weave-copilot` (about 90 MB). JSON uses source-generated `System.Text.Json` and `JsonNode` only, so no reflection serialization.
+
+## Licence
+
+weave-copilot is MIT-licensed; see [LICENSE](LICENSE). Release archives also carry `THIRD-PARTY-NOTICES` for GitHub.Copilot.SDK (MIT). The GitHub Copilot CLI isn't included in this repository or its releases: Weave Fleet downloads it from GitHub's own releases, under GitHub's licence for it.
