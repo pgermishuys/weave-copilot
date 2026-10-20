@@ -7,7 +7,7 @@ using WeaveCopilot.Sdk;
 namespace WeaveCopilot.Acp;
 
 /// <summary>The ACP agent: JSON-RPC methods on one side, an <see cref="ICopilotHost"/> on the other.</summary>
-public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydraFusion, string version, Action<string> onFatal, ICopilotLogin? login = null)
+public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydraFusion, string version, Action<string> onFatal, ICopilotLogin? login = null, ICopilotUsage? usage = null)
 {
     private const string DefaultModel = "gpt-5-mini";
     private const string HydraModel = "hydrafusion";
@@ -51,6 +51,7 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
                 "session/set_config_option" when p.Str("configId") == "model" => await SetModelAsync(p, p.Str("value")),
                 "session/prompt" => await PromptAsync(p),
                 "_fleet/steer" => await SteerAsync(p),
+                "_fleet/usage" => await UsageAsync(),
                 "_fleet/auth/status" => await AuthStatusAsync(),
                 "_fleet/auth/login" => await LoginAsync(p),
                 "_fleet/auth/attempt" => AttemptStatus(p),
@@ -70,6 +71,23 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
         var s = await host.AuthStatusAsync();
         // Who is signed in and how, never the token itself.
         return new JsonObject { ["authenticated"] = s.Authenticated, ["authType"] = s.AuthType, ["host"] = s.Host, ["login"] = s.Login, ["message"] = s.Message };
+    }
+
+    /// <summary>Plan and quotas for the signed-in user. The token is read and used inside <see cref="ICopilotUsage"/> and never comes back.</summary>
+    private async Task<JsonNode?> UsageAsync()
+    {
+        var s = await host.AuthStatusAsync();
+        var none = new JsonObject { ["authenticated"] = false, ["login"] = null, ["plan"] = null, ["resetAt"] = null, ["quotas"] = new JsonArray() };
+        if (!s.Authenticated) return none;
+        if (usage is null) throw new JsonRpcException(-32601, "Reading usage is not available here");
+        CopilotUsageResult? u;
+        try { u = await usage.GetAsync(s.Login, s.Host, CancellationToken.None); }
+        catch (UsageException e) { throw new JsonRpcException(-32000, e.Message); }
+        if (u is null) throw new JsonRpcException(-32000, "Copilot is signed in, but its token isn't somewhere Fleet can read it (it may be in the system keychain); set COPILOT_GITHUB_TOKEN or sign in again.");
+        var quotas = new JsonArray();
+        foreach (var q in u.Quotas)
+            quotas.Add(new JsonObject { ["id"] = q.Id, ["entitlement"] = q.Entitlement, ["remaining"] = q.Remaining, ["percentRemaining"] = q.PercentRemaining, ["unlimited"] = q.Unlimited });
+        return new JsonObject { ["authenticated"] = true, ["login"] = u.Login ?? s.Login, ["plan"] = u.Plan, ["resetAt"] = u.ResetAt, ["quotas"] = quotas };
     }
 
     private ICopilotLogin Login => login ?? throw new JsonRpcException(-32601, "Signing in is not available here");

@@ -23,7 +23,7 @@ catch (Exception e) { Console.Error.WriteLine("weave-copilot: " + e.Message); re
 // stdout carries only protocol lines; everything else goes to stderr.
 var rpc = new JsonRpcConnection(new StreamReader(Console.OpenStandardInput(), new System.Text.UTF8Encoding(false)), new StreamWriter(Console.OpenStandardOutput(), new System.Text.UTF8Encoding(false)) { NewLine = "\n" });
 using var login = new CopilotLogin(host.CliPath, ExperimentalGuard.DefaultHome());
-new AcpAgent(rpc, host, hydra, Version(), msg => { Console.Error.WriteLine("weave-copilot: " + msg); host.RestoreSettings(); Environment.Exit(1); }, login).Attach();
+new AcpAgent(rpc, host, hydra, Version(), msg => { Console.Error.WriteLine("weave-copilot: " + msg); host.RestoreSettings(); Environment.Exit(1); }, login, new CopilotUsage(ExperimentalGuard.DefaultHome())).Attach();
 // Never leave the Copilot CLI child behind: stop it on SIGTERM/SIGINT as well as on stdin EOF.
 using var term = System.Runtime.InteropServices.PosixSignalRegistration.Create(System.Runtime.InteropServices.PosixSignal.SIGTERM, ctx => { ctx.Cancel = true; login.Dispose(); host.DisposeAsync().AsTask().Wait(3000); Environment.Exit(0); });
 using var intr = System.Runtime.InteropServices.PosixSignalRegistration.Create(System.Runtime.InteropServices.PosixSignal.SIGINT, ctx => { ctx.Cancel = true; login.Dispose(); host.DisposeAsync().AsTask().Wait(3000); Environment.Exit(0); });
