@@ -180,12 +180,12 @@ public class SubagentTests
         var (wire, host) = await Started2();
         host.Session.Raise(AsyncBash("b1", "sh-1", false), AsyncBashDone("b1", "sh-1"));
         var chunk = new string('x', 600_000);
-        host.Session.Raise(ShellOut("b1", chunk), ShellOut("b1", chunk));
+        host.Session.Raise(ShellOut("b1", chunk), ShellOut("b1", chunk), ShellOut("b1", chunk), ShellOut("b1", chunk));
         var r = await wire.ResultAsync("_fleet/work/output", P("", "sh-1", 0));
-        Assert.Equal(1_200_000L, r["size"]!.GetValue<long>());
+        Assert.Equal(2_400_000L, r["size"]!.GetValue<long>());
         Assert.True(r["truncated"]!.GetValue<bool>());
         Assert.Equal(1 << 20, r.Str("text")!.Length);
-        Assert.False((await wire.ResultAsync("_fleet/work/output", P("", "sh-1", 1_200_000 - 10)))["truncated"]!.GetValue<bool>());
+        Assert.False((await wire.ResultAsync("_fleet/work/output", P("", "sh-1", 2_400_000 - 10)))["truncated"]!.GetValue<bool>());
         await wire.CloseAsync();
     }
 

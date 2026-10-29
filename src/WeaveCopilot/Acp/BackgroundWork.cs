@@ -64,7 +64,7 @@ public sealed partial class BackgroundWork
                 case ToolExecutionCompleteEvent { Data.ToolCallId: { } call } c when report && _asyncCalls.Remove(call, out var a):
                     var shell = ShellIdOf(c.Data.Result?.Content) ?? a.Str("shellId");
                     if (!c.Data.Success || shell is null) { _buffers.Remove(call); break; }
-                    _items[shell] = new WorkItem(shell, "shell", shell, call, a is JsonObject ao && ao["detach"]?.GetValue<bool>() == true);
+                    _items[shell] = new WorkItem(shell, "shell", shell, call, a?["detach"] is JsonValue dv && dv.TryGetValue<bool>(out var detach) && detach);
                     w = Report("started", shell, "shell", a.Str("description") ?? "Shell", a.Str("command"), call, true, canRead: true);
                     break;
                 case ToolShellOutputEvent { Data.ToolCallId: { } call } o when report && _buffers.TryGetValue(call, out var buf):
@@ -112,24 +112,26 @@ public sealed partial class BackgroundWork
     /// <summary>The last <see cref="MaxBuffer"/> bytes of a shell's output; offsets count bytes since its start.</summary>
     private sealed class OutputBuffer
     {
-        private byte[] _bytes = [];
+        private readonly List<byte> _bytes = [];
         private long _dropped;
 
         public void Append(string? text)
         {
             if (string.IsNullOrEmpty(text)) return;
-            var all = _bytes.Concat(Encoding.UTF8.GetBytes(text)).ToArray();
-            var over = Math.Max(0, all.Length - MaxBuffer);
-            _bytes = all[over..];
+            _bytes.AddRange(Encoding.UTF8.GetBytes(text));
+            // Trimmed in steps, not per chunk: a chatty dev server would otherwise move a mebibyte each line.
+            if (_bytes.Count <= 2 * MaxBuffer) return;
+            var over = _bytes.Count - MaxBuffer;
+            _bytes.RemoveRange(0, over);
             _dropped += over;
         }
 
         public OutputSlice Read(long offset)
         {
-            var size = _dropped + _bytes.Length;
-            var from = (int)Math.Clamp(offset - _dropped, 0, _bytes.Length);
-            while (from < _bytes.Length && (_bytes[from] & 0xC0) == 0x80) from++;   // never start inside a character
-            return new OutputSlice(Encoding.UTF8.GetString(_bytes, from, _bytes.Length - from), size, size, offset < _dropped);
+            var size = _dropped + _bytes.Count;
+            var from = (int)Math.Clamp(offset - _dropped, 0, _bytes.Count);
+            while (from < _bytes.Count && (_bytes[from] & 0xC0) == 0x80) from++;   // never start inside a character
+            return new OutputSlice(Encoding.UTF8.GetString(_bytes.GetRange(from, _bytes.Count - from).ToArray()), size, size, offset < _dropped);
         }
     }
 }
