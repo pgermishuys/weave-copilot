@@ -2,7 +2,7 @@ Third-party notices for weave-copilot
 
 weave-copilot depends on the following third-party software.
 
-GitHub.Copilot.SDK 1.0.22 (https://www.nuget.org/packages/GitHub.Copilot.SDK)
+GitHub.Copilot.SDK 1.0.28 (https://www.nuget.org/packages/GitHub.Copilot.SDK)
 License: MIT
 Copyright (c) Microsoft Corporation. All rights reserved.
 
