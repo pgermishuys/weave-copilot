@@ -86,6 +86,8 @@ public sealed class SdkHost(string cliPath, bool hydraFusion) : ICopilotHost
         config.FeatureFlags = new Dictionary<string, bool> { ["HYDRAFUSION_ROLLOUT"] = true };
     }
 
+    public async Task<string> ForkAsync(string sessionId, string? toEventId) => (await _client.Rpc.Sessions.ForkAsync(sessionId, toEventId, null)).SessionId;
+
     public async Task<bool> ProbeHydraFusionAsync(string cwd)
     {
         try
@@ -119,6 +121,12 @@ public sealed class SdkHost(string cliPath, bool hydraFusion) : ICopilotHost
         public Task AbortAsync() => s.AbortAsync();
         public Task SetModelAsync(string modelId) => s.SetModelAsync(modelId);
         public async Task<IReadOnlyList<SessionEvent>> GetEventsAsync() => await s.GetEventsAsync();
+        public async Task<string?> AskAsync(string question) => (await s.Rpc.Ui.EphemeralQueryAsync(question)).Answer;
+        public async Task<ShellResult> RunShellAsync(string requestId, string command)
+        {
+            var r = await s.Rpc.Shell.ExecuteUserRequestedAsync(requestId, command);
+            return new ShellResult(r.ToolCallId, r.Success, r.ExitCode, r.Output, r.Error);
+        }
         public ValueTask DisposeAsync() => s.DisposeAsync();
     }
 }

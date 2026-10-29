@@ -22,6 +22,8 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
         public bool CancelRequested { get; set; }
         public string? LastTodos { get; set; }
         public IDisposable? Subscription { get; set; }
+        /// <summary>Id of the UserMessageEvent that started the running prompt: where a fork made mid-turn is cut.</summary>
+        public string? TurnUserEventId { get; set; }
     }
 
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, Sess> _sessions = [];
@@ -58,6 +60,9 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
                 "_fleet/auth/cancel" => CancelLogin(p),
                 "_fleet/auth/logout" => await LogoutAsync(),
                 "_fleet/todos" => await TodosAsync(p),
+                "_fleet/shell" => await ShellAsync(p),
+                "_fleet/ask" => await AskAsync(p),
+                "_fleet/fork" => await ForkAsync(p),
                 _ => throw new JsonRpcException(-32601, $"Method not found: {method}"),
             };
         }
@@ -183,7 +188,11 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
                 foreach (var o in past.Map(ev)) Emit(session.Id, o, s);
             }
         }
-        s.Subscription = session.Subscribe(ev => { foreach (var o in s.Mapper.Map(ev)) Emit(session.Id, o, s); });
+        s.Subscription = session.Subscribe(ev =>
+        {
+            if (ev is UserMessageEvent um && s.Turn is not null && s.TurnUserEventId is null) s.TurnUserEventId = um.Id.ToString();
+            foreach (var o in s.Mapper.Map(ev)) Emit(session.Id, o, s);
+        });
         return s;
     }
 
@@ -205,6 +214,7 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
         {
             case Update u: rpc.SendNotification("session/update", new JsonObject { ["sessionId"] = sessionId, ["update"] = u.Body }); break;
             case Fusion f: f.Params["sessionId"] = sessionId; rpc.SendNotification("_fleet/fusion", f.Params); break;
+            case ShellCommand c: c.Params["sessionId"] = sessionId; rpc.SendNotification("_fleet/shell_command", c.Params); break;
             case TodosMaybeChanged: _ = PublishTodosAsync(sessionId, s); break;
             case Idle or Failure: s.Turn?.TrySetResult(o); break;
         }
@@ -255,7 +265,7 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
             if (idle.Usage is not null) result["usage"] = idle.Usage;
             return result;
         }
-        finally { stop.Cancel(); s.Turn = null; }
+        finally { stop.Cancel(); s.Turn = null; s.TurnUserEventId = null; }
     }
 
     /// <summary>While a prompt runs, notice a dead CLI child (no idle event will ever come).</summary>
@@ -290,6 +300,40 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
         if (s.Turn is null) throw new JsonRpcException(-32001, "No turn is running; send the text as a prompt instead");
         await s.Session.SendAsync(p.Str("prompt") ?? PromptText(p?["prompt"] as JsonArray), immediate: true);
         return new JsonObject();
+    }
+
+    /// <summary>A `!` command. Refused while a prompt runs (the CLI would interleave it with the turn); the output reaches the model on the next turn.</summary>
+    private async Task<JsonNode?> ShellAsync(JsonNode? p)
+    {
+        var s = Find(p);
+        if (s.Turn is not null) throw new JsonRpcException(-32001, "A turn is running; run the command when it's over");
+        var command = p.Str("command") ?? throw new JsonRpcException(-32602, "command is required");
+        var r = await s.Session.RunShellAsync(p.Str("requestId") ?? Guid.NewGuid().ToString(), command);
+        return new JsonObject { ["toolCallId"] = r.ToolCallId, ["success"] = r.Success, ["exitCode"] = r.ExitCode, ["output"] = r.Output, ["error"] = r.Error };
+    }
+
+    /// <summary>An off-the-record question. Before the first user message there is nothing to ask about, so the model isn't called.</summary>
+    private async Task<JsonNode?> AskAsync(JsonNode? p)
+    {
+        var s = Find(p);
+        var question = p.Str("question") ?? throw new JsonRpcException(-32602, "question is required");
+        if (!(await s.Session.GetEventsAsync()).OfType<UserMessageEvent>().Any()) return new JsonObject { ["answer"] = null };
+        var answer = await s.Session.AskAsync(question);
+        return new JsonObject { ["answer"] = string.IsNullOrEmpty(answer) ? null : answer };
+    }
+
+    /// <summary>Copies the session. A running prompt is left out (the copy stops before the message that started it); the new session is opened later by `session/load`.</summary>
+    private async Task<JsonNode?> ForkAsync(JsonNode? p)
+    {
+        var s = Find(p);
+        var cut = s.Turn is not null ? s.TurnUserEventId : null;
+        var forkId = await host.ForkAsync(s.Session.Id, cut);
+        var b = ForkCut.Boundary(await s.Session.GetEventsAsync(), cut);
+        return new JsonObject
+        {
+            ["sessionId"] = forkId,
+            ["boundary"] = b is null ? null : new JsonObject { ["id"] = b.Id, ["at"] = b.At, ["offset"] = b.Offset },
+        };
     }
 
     private async Task<JsonNode?> SetModelAsync(JsonNode? p, string? model)
