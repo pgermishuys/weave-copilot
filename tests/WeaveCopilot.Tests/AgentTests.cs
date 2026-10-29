@@ -70,7 +70,7 @@ public class AgentTests
         Assert.Equal("end_turn", res.Str("stopReason"));
         Assert.Equal(12, res["usage"]!["totalTokens"]!.GetValue<long>());
         Assert.Equal("say hi", host.Session.Sent.Single().Prompt);
-        Assert.Equal("agent_message_chunk", wire.Notifications.Single()["params"]!["update"]!.Str("sessionUpdate"));
+        Assert.Equal(["agent_message_chunk", "usage_update"], wire.Notifications.Select(n => n["params"]!["update"]!.Str("sessionUpdate")));
         await wire.CloseAsync();
     }
 
@@ -276,6 +276,72 @@ public class AgentTests
 
         var asked = await wire.ResultAsync("_fleet/todos", Obj(("sessionId", "s-1")));
         Assert.Equal(3, asked["entries"]!.AsArray().Count);
+        await wire.CloseAsync();
+    }
+
+    private static JsonArray Text(string t) => new(Obj(("type", "text"), ("text", t)));
+
+    [Fact]
+    public async Task Compact_runs_a_manual_compaction_and_reports_what_it_removed()
+    {
+        var (wire, host, _) = Start();
+        await wire.ResultAsync("session/new", Obj(("cwd", "/w")));
+        var res = await wire.ResultAsync("_fleet/compact", Obj(("sessionId", "s-1"), ("instructions", "keep the plan")));
+        Assert.Equal((true, 1200, 14), (res["success"]!.GetValue<bool>(), res["tokensRemoved"]!.GetValue<int>(), res["messagesRemoved"]!.GetValue<int>()));
+        Assert.Equal("keep the plan", Assert.Single(host.Session.Compactions));
+        await wire.CloseAsync();
+    }
+
+    [Fact]
+    public async Task Compact_while_a_turn_runs_is_rejected_with_32001_and_compacts_nothing()
+    {
+        var (wire, host, _) = Start();
+        await wire.ResultAsync("session/new", Obj(("cwd", "/w")));
+        wire.Send(Obj(("jsonrpc", "2.0"), ("id", 900), ("method", "session/prompt"), ("params", Obj(("sessionId", "s-1"), ("prompt", Text("long"))))));
+        while (host.Session.Sent.Count == 0) await Task.Delay(10);
+        var res = await wire.CallAsync("_fleet/compact", Obj(("sessionId", "s-1")));
+        Assert.Equal(-32001, res["error"]!["code"]!.GetValue<int>());
+        Assert.Equal("A turn is running; compact the session when it's over", res["error"]!.Str("message"));
+        Assert.Empty(host.Session.Compactions);
+        host.Session.Raise(Ev.Idle());
+        Assert.Equal(900, (await wire.NextAsync())["id"]!.GetValue<int>());
+        await wire.CloseAsync();
+    }
+
+    [Fact]
+    public async Task Compact_that_does_not_succeed_is_a_plain_32000_error()
+    {
+        var (wire, host, _) = Start();
+        await wire.ResultAsync("session/new", Obj(("cwd", "/w")));
+        host.Session.CompactOutcome = new CompactResult(false, 0, 0);
+        var res = await wire.CallAsync("_fleet/compact", Obj(("sessionId", "s-1")));
+        Assert.Equal(-32000, res["error"]!["code"]!.GetValue<int>());
+        await wire.CloseAsync();
+    }
+
+    [Fact]
+    public async Task Compaction_events_reach_the_client_as_fleet_compaction_with_the_session_id()
+    {
+        var (wire, host, _) = Start();
+        await wire.ResultAsync("session/new", Obj(("cwd", "/w")));
+        host.Session.OnSend = (s, _) => s.Raise(Ev.CompactStart("a1", "threshold"), Ev.Idle(), Ev.CompactDone("a1"));
+        await wire.ResultAsync("session/prompt", Obj(("sessionId", "s-1"), ("prompt", Text("go"))));
+        var notes = wire.Notifications.Where(n => n.Str("method") == "_fleet/compaction").Select(n => n["params"]!).ToList();
+        Assert.Equal(["started", "ended"], notes.Select(n => n.Str("phase")));
+        Assert.All(notes, n => Assert.Equal(("s-1", "auto"), (n.Str("sessionId"), n.Str("trigger"))));
+        await wire.CloseAsync();
+    }
+
+    [Fact]
+    public async Task Model_notes_go_ahead_of_the_text_for_the_model_while_the_transcript_keeps_only_the_text()
+    {
+        var (wire, host, _) = Start();
+        await wire.ResultAsync("session/new", Obj(("cwd", "/w")));
+        host.Session.OnSend = (s, _) => s.Raise(Ev.Idle());
+        await wire.ResultAsync("session/prompt", Obj(("sessionId", "s-1"), ("prompt", Text("say hi")), ("_meta", Obj(("modelNotes", new JsonArray("note one", 42, "", "note two"))))));
+        await wire.ResultAsync("session/prompt", Obj(("sessionId", "s-1"), ("prompt", Text("again")), ("_meta", Obj(("modelNotes", new JsonArray())))));
+        Assert.Equal(["note one\n\nnote two\n\nsay hi", "again"], host.Session.Sent.Select(x => x.Prompt));
+        Assert.Equal(["say hi", null], host.Session.DisplayPrompts);
         await wire.CloseAsync();
     }
 }

@@ -109,15 +109,21 @@ public sealed class SdkHost(string cliPath, bool hydraFusion) : ICopilotHost
     {
         public string Id => s.SessionId;
         public IDisposable Subscribe(Action<SessionEvent> handler) => s.On(handler);
-        public Task SendAsync(string prompt, bool immediate, IReadOnlyList<ImageData>? images = null) =>
+        public Task SendAsync(string prompt, bool immediate, IReadOnlyList<ImageData>? images = null, string? displayPrompt = null) =>
             s.SendAsync(new MessageOptions
             {
                 Prompt = prompt,
+                DisplayPrompt = displayPrompt,
                 Mode = immediate ? "immediate" : null,
                 Attachments = images is { Count: > 0 } ? [.. images.Select(i => (Attachment)new AttachmentBlob { Data = i.Base64, MimeType = i.MimeType, DisplayName = i.Name })] : null,
             });
         public async Task<IReadOnlyList<TodoRow>> ReadTodosAsync() =>
             (await s.Rpc.Plan.ReadSqlTodosAsync()).Rows.Select(r => new TodoRow(r.Title ?? r.Description ?? r.Id ?? "", r.Status ?? "pending")).ToList();
+        public async Task<CompactResult> CompactAsync(string? instructions)
+        {
+            var r = await s.Rpc.History.CompactAsync(new SessionHistoryCompactRequest { Trigger = SessionHistoryCompactRequestTrigger.Manual, CustomInstructions = instructions });
+            return new CompactResult(r.Success, r.TokensRemoved, r.MessagesRemoved);
+        }
         public Task AbortAsync() => s.AbortAsync();
         public Task SetModelAsync(string modelId) => s.SetModelAsync(modelId);
         public async Task<IReadOnlyList<SessionEvent>> GetEventsAsync() => await s.GetEventsAsync();

@@ -18,9 +18,15 @@ public static class Ev
     public static SessionEvent Message(string id, string text, string? fusion = null) => Make("assistant.message", $$"""{"messageId":"{{id}}","content":"{{text}}"{{Fusion(fusion)}}}""");
     public static SessionEvent ToolStart(string id, string tool, string args, string? fusion = null) => Make("tool.execution_start", $$"""{"toolCallId":"{{id}}","toolName":"{{tool}}","toolTitle":"Using {{tool}}","arguments":{{args}}{{Fusion(fusion)}}}""");
     public static SessionEvent ToolDone(string id, bool ok, string text, string? fusion = null) => Make("tool.execution_complete", $$"""{"toolCallId":"{{id}}","success":{{(ok ? "true" : "false")}},"result":{"content":"{{text}}"}{{Fusion(fusion)}}}""");
+    public static SessionEvent CompactStart(string attempt, string? trigger, int tokens = 90000) =>
+        Make("session.compaction_start", $$"""{"compactionAttemptId":"{{attempt}}","currentTokens":{{tokens}}{{Opt("trigger", trigger)}}}""");
+    public static SessionEvent CompactDone(string attempt, bool ok = true, string? trigger = null, string? error = null) =>
+        Make("session.compaction_complete", $$"""{"compactionAttemptId":"{{attempt}}","success":{{(ok ? "true" : "false")}},"preCompactionTokens":90000,"postCompactionTokens":8000,"summaryContent":"  Short summary  "{{Opt("trigger", trigger)}}{{Opt("error", error)}}}""");
     public static SessionEvent Idle(bool aborted = false) => Make("session.idle", $$"""{"aborted":{{(aborted ? "true" : "false")}}}""");
     public static SessionEvent Error(string msg) => Make("session.error", $$"""{"errorType":"x","message":"{{msg}}"}""");
     public static SessionEvent Usage(int input, int output, string? fusion = null) => Make("assistant.usage", $$"""{"model":"m","inputTokens":{{input}},"outputTokens":{{output}}{{Fusion(fusion)}}}""");
+
+    private static string Opt(string name, string? value) => value is null ? "" : $$""","{{name}}":"{{value}}" """.TrimEnd();
 
     private static string Fusion(string? commitId) =>
         commitId is null ? "" : $$""","fusion":{"fusionId":"f1","commitId":"{{commitId}}","pattern":"single","policy":"max","syntheticModel":"hf"}""";
@@ -91,6 +97,9 @@ public sealed class FakeSession(string id) : ICopilotSession
     private Action<SessionEvent>? _handler;
     public string Id { get; } = id;
     public List<(string Prompt, bool Immediate)> Sent { get; } = [];
+    public List<string?> DisplayPrompts { get; } = [];
+    public CompactResult CompactOutcome { get; set; } = new(true, 1200, 14);
+    public List<string?> Compactions { get; } = [];
     public List<ImageData> Images { get; } = [];
     public List<TodoRow> Todos { get; } = [];
     public List<string> Models { get; } = [];
@@ -101,8 +110,9 @@ public sealed class FakeSession(string id) : ICopilotSession
 
     public void Raise(params SessionEvent[] events) { foreach (var e in events) _handler?.Invoke(e); }
     public IDisposable Subscribe(Action<SessionEvent> handler) { _handler = handler; return new Noop(); }
-    public Task SendAsync(string prompt, bool immediate, IReadOnlyList<ImageData>? images = null) { Sent.Add((prompt, immediate)); Images.AddRange(images ?? []); OnSend?.Invoke(this, prompt); return Task.CompletedTask; }
+    public Task SendAsync(string prompt, bool immediate, IReadOnlyList<ImageData>? images = null, string? displayPrompt = null) { Sent.Add((prompt, immediate)); DisplayPrompts.Add(displayPrompt); Images.AddRange(images ?? []); OnSend?.Invoke(this, prompt); return Task.CompletedTask; }
     public Task<IReadOnlyList<TodoRow>> ReadTodosAsync() => Task.FromResult<IReadOnlyList<TodoRow>>([.. Todos]);
+    public Task<CompactResult> CompactAsync(string? instructions) { Compactions.Add(instructions); return Task.FromResult(CompactOutcome); }
     public Task AbortAsync() { Aborted = true; Raise(Ev.Idle(aborted: true)); return Task.CompletedTask; }
     public Task SetModelAsync(string modelId) { Models.Add(modelId); return Task.CompletedTask; }
     public Task<IReadOnlyList<SessionEvent>> GetEventsAsync() => Task.FromResult<IReadOnlyList<SessionEvent>>(History);
