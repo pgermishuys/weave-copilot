@@ -113,6 +113,13 @@ public sealed class FakeSession(string id) : ICopilotSession
     public Task SendAsync(string prompt, bool immediate, IReadOnlyList<ImageData>? images = null, string? displayPrompt = null) { Sent.Add((prompt, immediate)); DisplayPrompts.Add(displayPrompt); Images.AddRange(images ?? []); OnSend?.Invoke(this, prompt); return Task.CompletedTask; }
     public Task<IReadOnlyList<TodoRow>> ReadTodosAsync() => Task.FromResult<IReadOnlyList<TodoRow>>([.. Todos]);
     public Task<CompactResult> CompactAsync(string? instructions) { Compactions.Add(instructions); return Task.FromResult(CompactOutcome); }
+    public List<CommandEntry> Commands { get; } = [];
+    public Dictionary<string, CommandResult> Results { get; } = [];
+    public List<(string Name, string? Input)> Invoked { get; } = [];
+    public List<string?> Agents { get; } = [];
+    public Task<IReadOnlyList<CommandEntry>> ListCommandsAsync() => Task.FromResult<IReadOnlyList<CommandEntry>>([.. Commands]);
+    public Task<CommandResult> InvokeCommandAsync(string name, string? input) { Invoked.Add((name, input)); return Task.FromResult(Results[name]); }
+    public Task SelectAgentAsync(string? name) { Agents.Add(name); return Task.CompletedTask; }
     public Task AbortAsync() { Aborted = true; Raise(Ev.Idle(aborted: true)); return Task.CompletedTask; }
     public Task SetModelAsync(string modelId) { Models.Add(modelId); return Task.CompletedTask; }
     public Task<IReadOnlyList<SessionEvent>> GetEventsAsync() => Task.FromResult<IReadOnlyList<SessionEvent>>(History);
@@ -149,8 +156,11 @@ public sealed class FakeHost : ICopilotHost
     public Task<AuthStatus> AuthStatusAsync() => Task.FromResult(Auth);
     public Task<IReadOnlyList<ModelEntry>> ListModelsAsync() => Task.FromResult<IReadOnlyList<ModelEntry>>(Models);
     public IReadOnlyList<AcpMcpServer>? Mcp;
-    public Task<ICopilotSession> CreateAsync(string cwd, string? model, PermissionCallback permission, IReadOnlyList<AcpMcpServer>? mcp = null) { Mcp = mcp; Creates++; CreatedModel = model; Permission = permission; return Task.FromResult<ICopilotSession>(Session); }
-    public Task<ICopilotSession> ResumeAsync(string sessionId, string cwd, PermissionCallback permission, IReadOnlyList<AcpMcpServer>? mcp = null) { Mcp = mcp; Permission = permission; return Task.FromResult<ICopilotSession>(Session); }
+    public List<IReadOnlyList<string>?> SkillDirs { get; } = [];
+    public List<AgentEntry> AgentList { get; } = [];
+    public Task<IReadOnlyList<AgentEntry>> ListAgentsAsync(string cwd) => Task.FromResult<IReadOnlyList<AgentEntry>>([.. AgentList]);
+    public Task<ICopilotSession> CreateAsync(string cwd, string? model, PermissionCallback permission, IReadOnlyList<AcpMcpServer>? mcp = null, IReadOnlyList<string>? skillDirectories = null) { Mcp = mcp; SkillDirs.Add(skillDirectories); Creates++; CreatedModel = model; Permission = permission; return Task.FromResult<ICopilotSession>(Session); }
+    public Task<ICopilotSession> ResumeAsync(string sessionId, string cwd, PermissionCallback permission, IReadOnlyList<AcpMcpServer>? mcp = null, IReadOnlyList<string>? skillDirectories = null) { Mcp = mcp; SkillDirs.Add(skillDirectories); Permission = permission; return Task.FromResult<ICopilotSession>(Session); }
     public List<(string SessionId, string? ToEventId)> Forks { get; } = [];
     public Task<string> ForkAsync(string sessionId, string? toEventId) { Forks.Add((sessionId, toEventId)); return Task.FromResult("fork-1"); }
     public Task<bool> ProbeHydraFusionAsync(string cwd) { HydraProbes++; return Task.FromResult(HydraProbeResult); }

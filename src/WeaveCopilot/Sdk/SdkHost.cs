@@ -57,21 +57,37 @@ public sealed class SdkHost(string cliPath, bool hydraFusion) : ICopilotHost
     private Func<PermissionRequest, PermissionInvocation, Task<PermissionDecision>> Wrap(PermissionCallback cb) =>
         (req, inv) => cb(inv.SessionId, req);
 
-    public async Task<ICopilotSession> CreateAsync(string cwd, string? model, PermissionCallback permission, IReadOnlyList<AcpMcpServer>? mcp = null)
+    public async Task<ICopilotSession> CreateAsync(string cwd, string? model, PermissionCallback permission, IReadOnlyList<AcpMcpServer>? mcp = null, IReadOnlyList<string>? skillDirectories = null)
     {
         var config = new SessionConfig { Model = model, WorkingDirectory = cwd, Streaming = true, OnPermissionRequest = Wrap(permission) };
         Gate(config);
+        Discover(config, skillDirectories);
         config.McpServers = ToSdk(mcp);
         return new SdkSession(await _client.CreateSessionAsync(config));
     }
 
-    public async Task<ICopilotSession> ResumeAsync(string sessionId, string cwd, PermissionCallback permission, IReadOnlyList<AcpMcpServer>? mcp = null)
+    public async Task<ICopilotSession> ResumeAsync(string sessionId, string cwd, PermissionCallback permission, IReadOnlyList<AcpMcpServer>? mcp = null, IReadOnlyList<string>? skillDirectories = null)
     {
         var config = new ResumeSessionConfig { WorkingDirectory = cwd, Streaming = true, OnPermissionRequest = Wrap(permission) };
         Gate(config);
+        Discover(config, skillDirectories);
         config.McpServers = ToSdk(mcp);
         return new SdkSession(await _client.ResumeSessionAsync(sessionId, config));
     }
+
+    /// <summary>Without discovery a session doesn't see the folder's .github/agents and .github/skills.</summary>
+    private static void Discover(SessionConfigBase config, IReadOnlyList<string>? skillDirectories)
+    {
+        config.EnableConfigDiscovery = true;
+        config.SkillDirectories = skillDirectories is { Count: > 0 } ? [.. skillDirectories] : null;
+    }
+
+    public async Task<IReadOnlyList<AgentEntry>> ListAgentsAsync(string cwd) =>
+        UserAgents((await _client.Rpc.Agents.DiscoverAsync(new AgentsDiscoverRequest { ProjectPaths = [cwd] })).Agents);
+
+    /// <summary>The agents a user can pick: those not marked <c>userInvocable: false</c>.</summary>
+    public static IReadOnlyList<AgentEntry> UserAgents(IEnumerable<AgentInfo> agents) =>
+        [.. agents.Where(a => a.UserInvocable != false).Select(a => new AgentEntry(a.Name, a.DisplayName, a.Description, a.Source?.Value))];
 
     private static Dictionary<string, McpServerConfig>? ToSdk(IReadOnlyList<AcpMcpServer>? servers) =>
         servers is { Count: > 0 }
@@ -124,6 +140,17 @@ public sealed class SdkHost(string cliPath, bool hydraFusion) : ICopilotHost
             var r = await s.Rpc.History.CompactAsync(new SessionHistoryCompactRequest { Trigger = SessionHistoryCompactRequestTrigger.Manual, CustomInstructions = instructions });
             return new CompactResult(r.Success, r.TokensRemoved, r.MessagesRemoved);
         }
+        public async Task<IReadOnlyList<CommandEntry>> ListCommandsAsync() =>
+            (await s.Rpc.Commands.ListAsync(new SessionCommandsListRequest { IncludeBuiltins = true, IncludeSkills = true, IncludeClientCommands = true })).Commands
+                .Select(c => new CommandEntry(c.Name, c.Description, c.Input?.Hint, c.Kind.Value)).ToList();
+        public async Task<CommandResult> InvokeCommandAsync(string name, string? input) => await s.Rpc.Commands.InvokeAsync(name, input) switch
+        {
+            SlashCommandInvocationResultAgentPrompt p => new CommandResult("prompt", p.Prompt),
+            SlashCommandInvocationResultText t => new CommandResult("text", t.Text),
+            SlashCommandInvocationResultCompleted c => new CommandResult("text", c.Message),
+            _ => new CommandResult("unsupported", null),
+        };
+        public Task SelectAgentAsync(string? name) => string.IsNullOrEmpty(name) ? s.Rpc.Agent.DeselectAsync() : s.Rpc.Agent.SelectAsync(name);
         public Task AbortAsync() => s.AbortAsync();
         public Task SetModelAsync(string modelId) => s.SetModelAsync(modelId);
         public async Task<IReadOnlyList<SessionEvent>> GetEventsAsync() => await s.GetEventsAsync();

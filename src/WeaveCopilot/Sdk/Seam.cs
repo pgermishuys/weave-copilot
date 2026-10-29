@@ -12,6 +12,14 @@ public sealed record TodoRow(string Title, string Status);
 /// <summary>What a manual compaction reported.</summary>
 public sealed record CompactResult(bool Success, long TokensRemoved, long MessagesRemoved);
 
+/// <summary>A slash command the session knows; <c>Kind</c> is builtin, skill or client.</summary>
+public sealed record CommandEntry(string Name, string? Description, string? Hint, string Kind);
+
+/// <summary>What invoking a command gave: <c>prompt</c> (send <c>Text</c> to the model), <c>text</c> (show <c>Text</c>, null for nothing), or <c>unsupported</c> (needs Copilot's own terminal).</summary>
+public sealed record CommandResult(string Kind, string? Text);
+
+public sealed record AgentEntry(string Name, string? DisplayName, string? Description, string? Source);
+
 public sealed record ImageData(string Base64, string MimeType, string? Name);
 
 /// <summary>How a `!` shell command ended, as the CLI reports it.</summary>
@@ -55,6 +63,12 @@ public interface ICopilotSession : IAsyncDisposable
     Task<CompactResult> CompactAsync(string? instructions);
     /// <summary>The rows of the session's `todos` table, which is where Copilot keeps its todo list.</summary>
     Task<IReadOnlyList<TodoRow>> ReadTodosAsync();
+    /// <summary>The session's slash commands: builtin, skill and client.</summary>
+    Task<IReadOnlyList<CommandEntry>> ListCommandsAsync();
+    /// <summary>Expands a command without starting a turn. Throws for an unknown name.</summary>
+    Task<CommandResult> InvokeCommandAsync(string name, string? input);
+    /// <summary>Runs later turns as the named custom agent; null or empty goes back to Copilot's own.</summary>
+    Task SelectAgentAsync(string? name);
     Task AbortAsync();
     Task SetModelAsync(string modelId);
     Task<IReadOnlyList<SessionEvent>> GetEventsAsync();
@@ -78,8 +92,10 @@ public interface ICopilotHost : IAsyncDisposable
     Task<IReadOnlyList<ModelEntry>> ListModelsAsync();
     /// <summary>Who the CLI is signed in as, asked of the CLI so it reflects a sign-in made a moment ago.</summary>
     Task<AuthStatus> AuthStatusAsync();
-    Task<ICopilotSession> CreateAsync(string cwd, string? model, PermissionCallback permission, IReadOnlyList<AcpMcpServer>? mcp = null);
-    Task<ICopilotSession> ResumeAsync(string sessionId, string cwd, PermissionCallback permission, IReadOnlyList<AcpMcpServer>? mcp = null);
+    Task<ICopilotSession> CreateAsync(string cwd, string? model, PermissionCallback permission, IReadOnlyList<AcpMcpServer>? mcp = null, IReadOnlyList<string>? skillDirectories = null);
+    Task<ICopilotSession> ResumeAsync(string sessionId, string cwd, PermissionCallback permission, IReadOnlyList<AcpMcpServer>? mcp = null, IReadOnlyList<string>? skillDirectories = null);
+    /// <summary>Custom agents Copilot finds for a folder, without a session.</summary>
+    Task<IReadOnlyList<AgentEntry>> ListAgentsAsync(string cwd);
     /// <summary>Copies a session (up to, not including, the event <paramref name="toEventId"/>; all of it when null) into a new one and returns the new id.</summary>
     Task<string> ForkAsync(string sessionId, string? toEventId);
     /// <summary>Cheap create-only probe: can a session be created with the synthetic hydrafusion model?</summary>
