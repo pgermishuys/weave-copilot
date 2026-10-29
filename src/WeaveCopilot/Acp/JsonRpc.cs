@@ -75,7 +75,7 @@ public sealed class JsonRpcConnection(TextReader input, TextWriter output)
     private async Task HandleRequestAsync(JsonNode id, string method, JsonNode? @params)
     {
         JsonObject reply;
-        try { var result = await OnRequest(method, @params) ?? new JsonObject(); reply = new JsonObject { ["jsonrpc"] = "2.0", ["id"] = id, ["result"] = result }; }
+        try { var result = await OnRequest(method, @params); reply = new JsonObject { ["jsonrpc"] = "2.0", ["id"] = id, ["result"] = result }; }
         catch (JsonRpcException e) { reply = Error(id, e.Code, e.Message); }
         catch (Exception e) { reply = Error(id, -32603, e.Message); }
         Enqueue(reply);

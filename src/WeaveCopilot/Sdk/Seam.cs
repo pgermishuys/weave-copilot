@@ -13,6 +13,8 @@ public sealed record ImageData(string Base64, string MimeType, string? Name);
 
 /// <summary>How a `!` shell command ended, as the CLI reports it.</summary>
 public sealed record ShellResult(string? ToolCallId, bool Success, double? ExitCode, string? Output, string? Error);
+/// <summary>What a background shell has printed since a cursor; <see cref="Exited"/> once it ended.</summary>
+public sealed record TaskOutput(string Text, string? Cursor, bool Exited, int? ExitCode);
 
 public delegate Task<PermissionDecision> PermissionCallback(string sessionId, PermissionRequest request);
 
@@ -54,6 +56,10 @@ public interface ICopilotSession : IAsyncDisposable
     Task<string?> AskAsync(string question);
     /// <summary>Runs a command the user typed (a `!` command) in the session's folder; returns when it ends. The model sees its output on the next turn.</summary>
     Task<ShellResult> RunShellAsync(string requestId, string command);
+    /// <summary>Cancels a background task (a subagent's AgentId or a shellId); false if the CLI knew no such running task.</summary>
+    Task<bool> CancelTaskAsync(string id);
+    /// <summary>A detached shell's output from a cursor (null: from the start). Don't use the task list: the SDK can't parse it.</summary>
+    Task<TaskOutput> ReadTaskOutputAsync(string id, string? cursor);
 }
 
 /// <summary>Small seam around the Copilot client (one CLI child process).</summary>

@@ -112,6 +112,12 @@ public sealed class FakeSession(string id) : ICopilotSession
     public List<(string RequestId, string Command)> Shells { get; } = [];
     public ShellResult ShellOutcome { get; set; } = new("call-1", true, 0, "hi", null);
     public Task<ShellResult> RunShellAsync(string requestId, string command) { Shells.Add((requestId, command)); return Task.FromResult(ShellOutcome); }
+    public List<string> Cancelled { get; } = [];
+    public bool CancelResult { get; set; } = true;
+    public List<(string Id, string? Cursor)> Reads { get; } = [];
+    public TaskOutput ReadResult { get; set; } = new("", null, false, null);
+    public Task<bool> CancelTaskAsync(string id) { Cancelled.Add(id); return Task.FromResult(CancelResult); }
+    public Task<TaskOutput> ReadTaskOutputAsync(string id, string? cursor) { Reads.Add((id, cursor)); return Task.FromResult(ReadResult); }
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     private sealed class Noop : IDisposable { public void Dispose() { } }
 }

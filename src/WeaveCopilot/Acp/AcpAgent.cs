@@ -63,6 +63,8 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
                 "_fleet/shell" => await ShellAsync(p),
                 "_fleet/ask" => await AskAsync(p),
                 "_fleet/fork" => await ForkAsync(p),
+                "_fleet/work/stop" => await StopWorkAsync(p),
+                "_fleet/work/output" => await WorkOutputAsync(p),
                 _ => throw new JsonRpcException(-32601, $"Method not found: {method}"),
             };
         }
@@ -215,6 +217,7 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
             case Update u: rpc.SendNotification("session/update", new JsonObject { ["sessionId"] = sessionId, ["update"] = u.Body }); break;
             case Fusion f: f.Params["sessionId"] = sessionId; rpc.SendNotification("_fleet/fusion", f.Params); break;
             case ShellCommand c: c.Params["sessionId"] = sessionId; rpc.SendNotification("_fleet/shell_command", c.Params); break;
+            case Work w: w.Params["sessionId"] = sessionId; rpc.SendNotification("_fleet/work", w.Params); break;
             case TodosMaybeChanged: _ = PublishTodosAsync(sessionId, s); break;
             case Idle or Failure: s.Turn?.TrySetResult(o); break;
         }
@@ -334,6 +337,31 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
             ["sessionId"] = forkId,
             ["boundary"] = b is null ? null : new JsonObject { ["id"] = b.Id, ["at"] = b.At, ["offset"] = b.Offset },
         };
+    }
+
+    /// <summary>Cancels a subagent (by its task call id) or a background shell; tells the client it ended at once, since a cancelled shell sends no notification.</summary>
+    private async Task<JsonNode?> StopWorkAsync(JsonNode? p)
+    {
+        var s = Find(p);
+        if (p.Str("workId") is not { } workId || s.Mapper.Background.Running(workId) is not { } item) return new JsonObject { ["stopped"] = false };
+        var cancelled = await s.Session.CancelTaskAsync(item.Id);
+        if (cancelled && s.Mapper.Background.End(workId, "cancelled", null) is { } ended) Emit(s.Session.Id, ended, s);
+        return new JsonObject { ["stopped"] = cancelled };
+    }
+
+    /// <summary>A shell's output from a byte offset: kept from its events when attached, asked of the CLI when detached. Null for unknown work and for subagents.</summary>
+    private async Task<JsonNode?> WorkOutputAsync(JsonNode? p)
+    {
+        var s = Find(p);
+        var offset = p?["offset"] is JsonValue v && v.TryGetValue<long>(out var o) ? Math.Max(0, o) : 0;
+        if (p.Str("workId") is not { } workId || s.Mapper.Background.Find(workId) is not { Kind: "shell" } item) return null;
+        if (!item.Detached)
+            return s.Mapper.Background.Read(item, offset) is { } b
+                ? new JsonObject { ["text"] = b.Text, ["nextOffset"] = b.NextOffset, ["size"] = b.Size, ["truncated"] = b.Truncated }
+                : null;
+        var r = await s.Session.ReadTaskOutputAsync(item.Id, offset > 0 ? $"shell-output:v1:{offset}" : null);
+        var next = r.Cursor?.LastIndexOf(':') is >= 0 and var i && long.TryParse(r.Cursor![(i + 1)..], out var n) ? n : offset + System.Text.Encoding.UTF8.GetByteCount(r.Text);
+        return new JsonObject { ["text"] = r.Text, ["nextOffset"] = next, ["size"] = next, ["truncated"] = false };
     }
 
     private async Task<JsonNode?> SetModelAsync(JsonNode? p, string? model)

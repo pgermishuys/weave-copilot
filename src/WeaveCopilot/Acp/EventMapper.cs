@@ -15,6 +15,8 @@ public sealed record Idle(bool Aborted, JsonObject? Usage) : AgentOutput;
 public sealed record TodosMaybeChanged : AgentOutput;
 /// <summary>Params (minus sessionId) of the `_fleet/shell_command` notification: a `!` command started, printed, or ended.</summary>
 public sealed record ShellCommand(JsonObject Params) : AgentOutput;
+/// <summary>Params (minus sessionId) of the `_fleet/work` notification: a subagent or background shell started or ended.</summary>
+public sealed record Work(JsonObject Params) : AgentOutput;
 /// <summary>The session reported an error: fail the running prompt with this text.</summary>
 public sealed record Failure(string Message) : AgentOutput;
 
@@ -39,7 +41,38 @@ public sealed class EventMapper(string? cwd = null, bool history = false)
     private Fusion? _heldResolved;                           // history: the CLI logs `resolved` before the user's message, so it waits for the turn's first pass
     private FusionTotals? _fusion;                               // the turn's authoritative totals, once fusion_completed arrived
 
+    /// <summary>The subagents and background shells this session started.</summary>
+    public BackgroundWork Background { get; } = new();
+
+    /// <summary>
+    /// Subagents run in the parent's event stream; every event of theirs carries an AgentId. Their updates are tagged with the
+    /// parent's `task` call (`_meta.parentToolCallId`) so the client files them under it; what is the session's own (context bar,
+    /// errors, the end of the turn) is dropped, and an event that can't be traced to a call is dropped rather than shown as the parent's.
+    /// </summary>
     public IEnumerable<AgentOutput> Map(SessionEvent ev)
+    {
+        foreach (var w in Background.Track(ev, report: !history)) yield return w;
+        if (ev.AgentId is not { } agent)
+        {
+            foreach (var o in MapMain(ev)) yield return o;
+            yield break;
+        }
+        var call = Background.CallOf(agent) ?? ev switch
+        {
+            ToolExecutionStartEvent t => t.Data.ParentToolCallId,
+            ToolExecutionCompleteEvent t => t.Data.ParentToolCallId,
+            _ => null,
+        };
+        if (call is null || ev is SessionUsageInfoEvent) yield break;
+        IEnumerable<AgentOutput> outs = ev is UserMessageEvent { Data.Content: { Length: > 0 } text } u && !history ? [Chunk("user_message_chunk", text + ImagePlaceholders(u.Data))] : MapMain(ev);
+        foreach (var o in outs)
+        {
+            if (o is Update up) { (up.Body["_meta"] as JsonObject ?? (JsonObject)(up.Body["_meta"] = new JsonObject()))["parentToolCallId"] = call; yield return up; }
+            else if (o is TodosMaybeChanged) yield return o;
+        }
+    }
+
+    private IEnumerable<AgentOutput> MapMain(SessionEvent ev)
     {
         // HydraFusion replays tool/message events at commit with a commit id. Drop a replay only when its live twin
         // was already emitted: with streaming on, an answer can reach us only on the commit copy.
