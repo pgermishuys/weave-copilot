@@ -8,7 +8,7 @@
     <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="GitHub.Copilot.SDK" Version="1.0.22" />
+    <PackageReference Include="GitHub.Copilot.SDK" Version="1.0.28" />
     <InternalsVisibleTo Include="WeaveCopilot.Tests" />
   </ItemGroup>
 </Project>

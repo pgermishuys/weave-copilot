@@ -1,6 +1,6 @@
 # weave-copilot
 
-An [ACP](https://agentclientprotocol.com) agent (newline-delimited JSON-RPC 2.0 over stdio) that wraps GitHub's Copilot .NET SDK (`GitHub.Copilot.SDK` 1.0.22). Built for Weave Fleet. It runs the Copilot CLI as a child process over stdio (never in-process) and mirrors the shapes of `copilot --acp`.
+An [ACP](https://agentclientprotocol.com) agent (newline-delimited JSON-RPC 2.0 over stdio) that wraps GitHub's Copilot .NET SDK (`GitHub.Copilot.SDK` 1.0.28, tested against Copilot CLI 1.0.105). Built for Weave Fleet. It runs the Copilot CLI as a child process over stdio (never in-process) and mirrors the shapes of `copilot --acp`.
 
 ```
 weave-copilot [--copilot-cli <path>] [--hydrafusion]
