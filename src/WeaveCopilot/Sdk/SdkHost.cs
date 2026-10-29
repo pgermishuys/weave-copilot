@@ -127,6 +127,12 @@ public sealed class SdkHost(string cliPath, bool hydraFusion) : ICopilotHost
             var r = await s.Rpc.Shell.ExecuteUserRequestedAsync(requestId, command);
             return new ShellResult(r.ToolCallId, r.Success, r.ExitCode, r.Output, r.Error);
         }
+        public async Task<bool> CancelTaskAsync(string id) => (await s.Rpc.Tasks.CancelAsync(id)).Cancelled;
+        public async Task<TaskOutput> ReadTaskOutputAsync(string id, string? cursor)
+        {
+            var r = await s.Rpc.Tasks.ReadOutputAsync(id, cursor, null);
+            return new TaskOutput(r.Text ?? "", r.Cursor, r.Exit is not null, r.Exit?.ExitCode is { } code ? (int)code : null);
+        }
         public ValueTask DisposeAsync() => s.DisposeAsync();
     }
 }
