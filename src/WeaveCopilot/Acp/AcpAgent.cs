@@ -51,6 +51,9 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
                 "session/load" => await LoadAsync(p),
                 "session/set_model" => await SetModelAsync(p, p.Str("modelId")),
                 "session/set_config_option" when p.Str("configId") == "model" => await SetModelAsync(p, p.Str("value")),
+                "session/set_config_option" when p.Str("configId") == "agent" => await SetAgentAsync(p),
+                "_fleet/commands" => await CommandsAsync(p),
+                "_fleet/agents" => await AgentsAsync(p),
                 "session/prompt" => await PromptAsync(p),
                 "_fleet/steer" => await SteerAsync(p),
                 "_fleet/compact" => await CompactAsync(p),
@@ -152,8 +155,32 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
         var cwd = p.Str("cwd") ?? Directory.GetCurrentDirectory();
         var models = await ModelsAsync(cwd);
         var model = models.Any(m => m.Id == DefaultModel) ? DefaultModel : null;
-        var s = await Register(await host.CreateAsync(cwd, model, Permission, AcpMcpServer.Parse(p?["mcpServers"])), cwd, model ?? models.FirstOrDefault()?.Id);
+        var s = await Register(await host.CreateAsync(cwd, model, Permission, AcpMcpServer.Parse(p?["mcpServers"]), SkillDirectories(p)), cwd, model ?? models.FirstOrDefault()?.Id);
         return new JsonObject { ["sessionId"] = s.Session.Id, ["models"] = ModelsJson(models, s.Model) };
+    }
+
+    private static List<string> SkillDirectories(JsonNode? p) => Strings(p?["_meta"]?["skillDirectories"]);
+
+    private static List<string> Strings(JsonNode? array) =>
+        (array as JsonArray)?.Select(n => n is JsonValue v && v.TryGetValue<string>(out var t) ? t : null).OfType<string>().Where(t => t.Length > 0).ToList() ?? [];
+
+    /// <summary>Every slash command the session knows; the client filters.</summary>
+    private async Task<JsonNode?> CommandsAsync(JsonNode? p) => new JsonObject
+    {
+        ["commands"] = new JsonArray((await Find(p).Session.ListCommandsAsync()).Select(c => (JsonNode)new JsonObject { ["name"] = c.Name, ["description"] = c.Description, ["hint"] = c.Hint, ["kind"] = c.Kind }).ToArray()),
+    };
+
+    /// <summary>Custom agents for a folder, without a session.</summary>
+    private async Task<JsonNode?> AgentsAsync(JsonNode? p) => new JsonObject
+    {
+        ["agents"] = new JsonArray((await host.ListAgentsAsync(p.Str("cwd") ?? Directory.GetCurrentDirectory())).Select(a => (JsonNode)new JsonObject { ["name"] = a.Name, ["displayName"] = a.DisplayName, ["description"] = a.Description, ["source"] = a.Source }).ToArray()),
+    };
+
+    /// <summary>A name selects that custom agent for later turns; empty or null goes back to Copilot's own.</summary>
+    private async Task<JsonNode?> SetAgentAsync(JsonNode? p)
+    {
+        await Find(p).Session.SelectAgentAsync(p.Str("value"));
+        return new JsonObject();
     }
 
     /// <summary>Model catalog without creating a Copilot session, so nothing piles up in the user's session list.</summary>
@@ -172,7 +199,7 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
         var id = p.Str("sessionId") ?? throw new JsonRpcException(-32602, "sessionId is required");
         var cwd = p.Str("cwd") ?? Directory.GetCurrentDirectory();
         var models = await ModelsAsync(cwd);
-        var s = await Register(await host.ResumeAsync(id, cwd, Permission, AcpMcpServer.Parse(p?["mcpServers"])), cwd, null, replay: true);
+        var s = await Register(await host.ResumeAsync(id, cwd, Permission, AcpMcpServer.Parse(p?["mcpServers"]), SkillDirectories(p)), cwd, null, replay: true);
         await PublishTodosAsync(id, s);
         return new JsonObject { ["models"] = ModelsJson(models, s.Model) };
     }
@@ -255,15 +282,27 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
         var text = PromptText(p?["prompt"] as JsonArray);
         var images = PromptImages(p?["prompt"] as JsonArray);
         if (text.Length == 0 && images.Count > 0) text = "(see the attached image)";
-        var notes = (p?["_meta"]?["modelNotes"] as JsonArray)?.Select(n => n is JsonValue v && v.TryGetValue<string>(out var note) ? note : null).OfType<string>().Where(n => n.Length > 0).ToList() ?? [];
-        var sent = notes.Count > 0 ? string.Join("\n\n", notes) + "\n\n" + text : text;
+        var notes = Strings(p?["_meta"]?["modelNotes"]);
         var turn = new TaskCompletionSource<AgentOutput>(TaskCreationOptions.RunContinuationsAsynchronously);
         if (Interlocked.CompareExchange(ref s.Turn, turn, null) is not null) throw new JsonRpcException(-32000, "A prompt is already running for this session");
         s.CancelRequested = false;
         using var stop = new CancellationTokenSource();
         try
         {
-            await s.Session.SendAsync(sent, immediate: false, images, displayPrompt: notes.Count > 0 ? text : null);
+            var parts = new List<string>(notes);
+            string? display = null;
+            if (text.StartsWith('/') && await SlashAsync(s, text) is { } slash)
+            {
+                if (slash.Kind != "prompt") return Reply(s, slash);
+                (parts, display) = ([.. parts, slash.Text ?? text], text);
+            }
+            else
+            {
+                parts.AddRange(await SkillPromptsAsync(s, Strings(p?["_meta"]?["skills"])));
+                parts.Add(text);
+                if (parts.Count > 1) display = text;
+            }
+            await s.Session.SendAsync(string.Join("\n\n", parts), immediate: false, images, displayPrompt: display);
             _ = Task.Run(() => HeartbeatAsync(turn, stop.Token));
             var end = await turn.Task;
             if (end is Failure f) throw new JsonRpcException(-32000, f.Message);
@@ -273,6 +312,36 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
             return result;
         }
         finally { stop.Cancel(); s.Turn = null; s.TurnUserEventId = null; }
+    }
+
+    /// <summary>Expands a typed <c>/name rest</c> when <c>name</c> is one of the session's commands; null for plain text.</summary>
+    private static async Task<CommandResult?> SlashAsync(Sess s, string text)
+    {
+        var end = text.IndexOfAny([' ', '\t', '\n', '\r']);
+        var name = end < 0 ? text[1..] : text[1..end];
+        if (!(await s.Session.ListCommandsAsync()).Any(c => c.Name == name)) return null;
+        var rest = end < 0 ? "" : text[end..].Trim();
+        var r = await s.Session.InvokeCommandAsync(name, rest.Length > 0 ? rest : null);
+        return r.Kind == "unsupported" ? throw new JsonRpcException(-32000, $"/{name} needs Copilot's own terminal; Fleet can't show it.") : r;
+    }
+
+    /// <summary>A command that answered with text instead of a turn: show it as one message and end.</summary>
+    private JsonNode Reply(Sess s, CommandResult r)
+    {
+        if (!string.IsNullOrEmpty(r.Text))
+            Emit(s.Session.Id, new Update(new JsonObject { ["sessionUpdate"] = "agent_message_chunk", ["content"] = new JsonObject { ["type"] = "text", ["text"] = r.Text } }), s);
+        return new JsonObject { ["stopReason"] = "end_turn" };
+    }
+
+    /// <summary>The prompts of the named skills, in order; names that aren't skill commands are skipped.</summary>
+    private static async Task<List<string>> SkillPromptsAsync(Sess s, List<string> names)
+    {
+        var prompts = new List<string>();
+        if (names.Count == 0) return prompts;
+        var skills = (await s.Session.ListCommandsAsync()).Where(c => c.Kind == "skill").Select(c => c.Name).ToHashSet();
+        foreach (var n in names.Where(skills.Contains))
+            if ((await s.Session.InvokeCommandAsync(n, null)) is { Kind: "prompt", Text: { } t }) prompts.Add(t);
+        return prompts;
     }
 
     /// <summary>While a prompt runs, notice a dead CLI child (no idle event will ever come).</summary>

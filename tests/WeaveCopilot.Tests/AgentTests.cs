@@ -344,4 +344,154 @@ public class AgentTests
         Assert.Equal(["say hi", null], host.Session.DisplayPrompts);
         await wire.CloseAsync();
     }
+
+    private static async Task<(Wire wire, FakeHost host)> Commanding()
+    {
+        var (wire, host, _) = Start();
+        host.Session.Commands.AddRange([new("haiku-poet", "Writes a haiku", "topic", "skill"), new("tone", "Sets the tone", null, "skill"), new("env", "Shows the environment", null, "builtin"), new("model", "Pick a model", null, "builtin")]);
+        host.Session.Results["haiku-poet"] = new("prompt", "Follow the haiku-poet skill.\n\nARGUMENTS: about rain");
+        host.Session.Results["tone"] = new("prompt", "Follow the tone skill.");
+        host.Session.Results["env"] = new("text", "cwd: /work/demo");
+        host.Session.Results["model"] = new("unsupported", null);
+        host.Session.OnSend = (s, _) => s.Raise(Ev.Idle());
+        await wire.ResultAsync("session/new", Obj(("cwd", "/w")));
+        return (wire, host);
+    }
+
+    private static Task<JsonNode> Prompt(Wire wire, string text, JsonObject? meta = null) =>
+        wire.ResultAsync("session/prompt", Obj(("sessionId", "s-1"), ("prompt", Text(text)), ("_meta", meta)));
+
+    [Fact]
+    public async Task Fleet_commands_lists_every_command_with_its_hint_and_kind()
+    {
+        var (wire, _) = await Commanding();
+        var cmds = (JsonArray)(await wire.ResultAsync("_fleet/commands", Obj(("sessionId", "s-1"))))["commands"]!;
+        Assert.Equal(4, cmds.Count);
+        Assert.Equal(("haiku-poet", "Writes a haiku", "topic", "skill"), (cmds[0].Str("name"), cmds[0].Str("description"), cmds[0].Str("hint"), cmds[0].Str("kind")));
+        Assert.Null(cmds[1]!["hint"]);
+        Assert.Equal("builtin", cmds[2].Str("kind"));
+        await wire.CloseAsync();
+    }
+
+    [Fact]
+    public async Task A_typed_skill_command_is_expanded_and_sent_with_the_typed_text_as_the_display()
+    {
+        var (wire, host) = await Commanding();
+        var res = await Prompt(wire, "/haiku-poet  about rain ", Obj(("modelNotes", new JsonArray("note one"))));
+        Assert.Equal("end_turn", res.Str("stopReason"));
+        Assert.Equal([("haiku-poet", "about rain")], host.Session.Invoked);
+        Assert.Equal("note one\n\nFollow the haiku-poet skill.\n\nARGUMENTS: about rain", Assert.Single(host.Session.Sent).Prompt);
+        Assert.Equal("/haiku-poet  about rain ", Assert.Single(host.Session.DisplayPrompts));
+        await wire.CloseAsync();
+    }
+
+    [Fact]
+    public async Task A_command_without_input_is_invoked_with_null()
+    {
+        var (wire, host) = await Commanding();
+        await Prompt(wire, "/tone");
+        Assert.Equal([("tone", (string?)null)], host.Session.Invoked);
+        await wire.CloseAsync();
+    }
+
+    [Fact]
+    public async Task A_text_result_is_one_message_chunk_and_end_turn_with_no_send_and_the_next_prompt_still_runs()
+    {
+        var (wire, host) = await Commanding();
+        var res = await Prompt(wire, "/env");
+        Assert.Equal("end_turn", res.Str("stopReason"));
+        Assert.Empty(host.Session.Sent);
+        var up = Assert.Single(wire.Notifications, n => n["params"]!["update"].Str("sessionUpdate") == "agent_message_chunk")["params"]!["update"]!["content"];
+        Assert.Equal("cwd: /work/demo", up.Str("text"));
+        await Prompt(wire, "hello");
+        Assert.Equal(["hello"], host.Session.Sent.Select(x => x.Prompt));
+        await wire.CloseAsync();
+    }
+
+    [Fact]
+    public async Task A_completed_result_with_no_message_ends_the_turn_quietly()
+    {
+        var (wire, host) = await Commanding();
+        host.Session.Results["env"] = new("text", null);
+        Assert.Equal("end_turn", (await Prompt(wire, "/env")).Str("stopReason"));
+        Assert.Empty(wire.Notifications);
+        Assert.Empty(host.Session.Sent);
+        await wire.CloseAsync();
+    }
+
+    [Fact]
+    public async Task A_command_that_needs_the_terminal_is_a_32000_error_and_frees_the_turn()
+    {
+        var (wire, host) = await Commanding();
+        var err = (await wire.CallAsync("session/prompt", Obj(("sessionId", "s-1"), ("prompt", Text("/model"))))) ["error"]!;
+        Assert.Equal(-32000, err["code"]!.GetValue<int>());
+        Assert.Equal("/model needs Copilot's own terminal; Fleet can't show it.", err.Str("message"));
+        await Prompt(wire, "next");
+        Assert.Equal(["next"], host.Session.Sent.Select(x => x.Prompt));
+        await wire.CloseAsync();
+    }
+
+    [Fact]
+    public async Task An_unknown_slash_name_is_plain_text()
+    {
+        var (wire, host) = await Commanding();
+        await Prompt(wire, "/etc/hosts is odd");
+        Assert.Empty(host.Session.Invoked);
+        Assert.Equal(["/etc/hosts is odd"], host.Session.Sent.Select(x => x.Prompt));
+        Assert.Null(Assert.Single(host.Session.DisplayPrompts));
+        await wire.CloseAsync();
+    }
+
+    [Fact]
+    public async Task Meta_skills_go_between_the_notes_and_the_text_and_skip_names_that_are_not_skills()
+    {
+        var (wire, host) = await Commanding();
+        await Prompt(wire, "write it", Obj(("modelNotes", new JsonArray("note one")), ("skills", new JsonArray("tone", "env", "nope", "haiku-poet"))));
+        Assert.Equal([("tone", (string?)null), ("haiku-poet", null)], host.Session.Invoked);
+        Assert.Equal("note one\n\nFollow the tone skill.\n\nFollow the haiku-poet skill.\n\nARGUMENTS: about rain\n\nwrite it", Assert.Single(host.Session.Sent).Prompt);
+        Assert.Equal("write it", Assert.Single(host.Session.DisplayPrompts));
+        await wire.CloseAsync();
+    }
+
+    [Fact]
+    public async Task Skill_directories_from_meta_reach_create_and_resume()
+    {
+        var (wire, host, _) = Start();
+        JsonObject Meta() => Obj(("skillDirectories", new JsonArray("/data/skills/me", "", 7)));
+        await wire.ResultAsync("session/new", Obj(("cwd", "/w"), ("_meta", Meta())));
+        await wire.ResultAsync("session/load", Obj(("sessionId", "s-1"), ("cwd", "/w"), ("_meta", Meta())));
+        await wire.ResultAsync("session/new", Obj(("cwd", "/w")));
+        Assert.Equal(["/data/skills/me"], host.SkillDirs[0]);
+        Assert.Equal(["/data/skills/me"], host.SkillDirs[1]);
+        Assert.Empty(host.SkillDirs[2] ?? []);
+        await wire.CloseAsync();
+    }
+
+    [Fact]
+    public async Task Fleet_agents_lists_the_hosts_agents_without_a_session()
+    {
+        var (wire, host, _) = Start();
+        host.AgentList.Add(new("pirate", "Pirate", "Talks like a pirate", "project"));
+        var agents = (JsonArray)(await wire.ResultAsync("_fleet/agents", Obj(("cwd", "/w"))))["agents"]!;
+        Assert.Equal(("pirate", "Pirate", "Talks like a pirate", "project"), (agents[0].Str("name"), agents[0].Str("displayName"), agents[0].Str("description"), agents[0].Str("source")));
+        await wire.CloseAsync();
+    }
+
+    [Fact]
+    public void Agents_marked_not_user_invocable_are_left_out()
+    {
+        var shown = SdkHost.UserAgents([new() { Name = "pirate", UserInvocable = true }, new() { Name = "internal", UserInvocable = false }, new() { Name = "plain" }]);
+        Assert.Equal(["pirate", "plain"], shown.Select(a => a.Name));
+    }
+
+    [Fact]
+    public async Task Set_config_option_agent_selects_and_an_empty_or_null_value_deselects()
+    {
+        var (wire, host) = await Commanding();
+        Assert.Empty((JsonObject)await wire.ResultAsync("session/set_config_option", Obj(("sessionId", "s-1"), ("configId", "agent"), ("value", "pirate"))));
+        await wire.ResultAsync("session/set_config_option", Obj(("sessionId", "s-1"), ("configId", "agent"), ("value", "")));
+        await wire.ResultAsync("session/set_config_option", Obj(("sessionId", "s-1"), ("configId", "agent"), ("value", null)));
+        Assert.Equal(["pirate", "", null], host.Session.Agents);
+        await wire.CloseAsync();
+    }
 }
