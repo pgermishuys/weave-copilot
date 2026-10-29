@@ -53,6 +53,7 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
                 "session/set_config_option" when p.Str("configId") == "model" => await SetModelAsync(p, p.Str("value")),
                 "session/prompt" => await PromptAsync(p),
                 "_fleet/steer" => await SteerAsync(p),
+                "_fleet/compact" => await CompactAsync(p),
                 "_fleet/usage" => await UsageAsync(),
                 "_fleet/auth/status" => await AuthStatusAsync(),
                 "_fleet/auth/login" => await LoginAsync(p),
@@ -218,6 +219,7 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
             case Fusion f: f.Params["sessionId"] = sessionId; rpc.SendNotification("_fleet/fusion", f.Params); break;
             case ShellCommand c: c.Params["sessionId"] = sessionId; rpc.SendNotification("_fleet/shell_command", c.Params); break;
             case Work w: w.Params["sessionId"] = sessionId; rpc.SendNotification("_fleet/work", w.Params); break;
+            case Compaction c: c.Params["sessionId"] = sessionId; rpc.SendNotification("_fleet/compaction", c.Params); break;
             case TodosMaybeChanged: _ = PublishTodosAsync(sessionId, s); break;
             case Idle or Failure: s.Turn?.TrySetResult(o); break;
         }
@@ -253,13 +255,15 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
         var text = PromptText(p?["prompt"] as JsonArray);
         var images = PromptImages(p?["prompt"] as JsonArray);
         if (text.Length == 0 && images.Count > 0) text = "(see the attached image)";
+        var notes = (p?["_meta"]?["modelNotes"] as JsonArray)?.Select(n => n is JsonValue v && v.TryGetValue<string>(out var note) ? note : null).OfType<string>().Where(n => n.Length > 0).ToList() ?? [];
+        var sent = notes.Count > 0 ? string.Join("\n\n", notes) + "\n\n" + text : text;
         var turn = new TaskCompletionSource<AgentOutput>(TaskCreationOptions.RunContinuationsAsynchronously);
         if (Interlocked.CompareExchange(ref s.Turn, turn, null) is not null) throw new JsonRpcException(-32000, "A prompt is already running for this session");
         s.CancelRequested = false;
         using var stop = new CancellationTokenSource();
         try
         {
-            await s.Session.SendAsync(text, immediate: false, images);
+            await s.Session.SendAsync(sent, immediate: false, images, displayPrompt: notes.Count > 0 ? text : null);
             _ = Task.Run(() => HeartbeatAsync(turn, stop.Token));
             var end = await turn.Task;
             if (end is Failure f) throw new JsonRpcException(-32000, f.Message);
@@ -362,6 +366,16 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
         var r = await s.Session.ReadTaskOutputAsync(item.Id, offset > 0 ? $"shell-output:v1:{offset}" : null);
         var next = r.Cursor?.LastIndexOf(':') is >= 0 and var i && long.TryParse(r.Cursor![(i + 1)..], out var n) ? n : offset + System.Text.Encoding.UTF8.GetByteCount(r.Text);
         return new JsonObject { ["text"] = r.Text, ["nextOffset"] = next, ["size"] = next, ["truncated"] = false };
+    }
+
+    /// <summary>Compacts the session's history now. Not while a turn runs: -32001 tells the caller to wait.</summary>
+    private async Task<JsonNode?> CompactAsync(JsonNode? p)
+    {
+        var s = Find(p);
+        if (s.Turn is not null) throw new JsonRpcException(-32001, "A turn is running; compact the session when it's over");
+        var r = await s.Session.CompactAsync(p.Str("instructions"));
+        if (!r.Success) throw new JsonRpcException(-32000, "Copilot couldn't compact the session");
+        return new JsonObject { ["success"] = true, ["tokensRemoved"] = r.TokensRemoved, ["messagesRemoved"] = r.MessagesRemoved };
     }
 
     private async Task<JsonNode?> SetModelAsync(JsonNode? p, string? model)

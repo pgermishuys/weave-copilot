@@ -205,4 +205,46 @@ public class EventMapperTests
         // and replaying a turn must not leave usage behind for the next live one
         Assert.Null(((Idle)Run(new EventMapper(history: true), Ev.Idle()).SingleOrDefault() ?? new Idle(false, null)).Usage);
     }
+
+    private static JsonObject Note(AgentOutput o) => ((Compaction)o).Params;
+
+    [Fact]
+    public void Live_compaction_reports_started_then_ended_with_the_trigger_remembered_from_the_start()
+    {
+        var outs = Run(new EventMapper(), Ev.CompactStart("a1", "manual"), Ev.CompactDone("a1"), Ev.CompactStart("a2", "threshold"), Ev.CompactDone("a2"));
+        Assert.Equal(["started", "ended", "started", "ended"], outs.Select(o => Note(o).Str("phase")));
+        Assert.Equal(["manual", "manual", "auto", "auto"], outs.Select(o => Note(o).Str("trigger")));
+        Assert.Equal(90000, Note(outs[0])["tokensBefore"]!.GetValue<double>());
+        var ended = Note(outs[1]);
+        Assert.Equal((90000d, 8000d, "Short summary"), (ended["tokensBefore"]!.GetValue<double>(), ended["tokensAfter"]!.GetValue<double>(), ended.Str("summary")));
+    }
+
+    [Fact]
+    public void A_compaction_without_any_trigger_has_none_and_its_own_trigger_wins_over_the_start()
+    {
+        var outs = Run(new EventMapper(), Ev.CompactStart("a1", null), Ev.CompactDone("a1"), Ev.CompactStart("a2", "manual"), Ev.CompactDone("a2", trigger: "threshold"));
+        Assert.Equal([null, null, "manual", "auto"], outs.Select(o => Note(o).Str("trigger")));
+    }
+
+    [Fact]
+    public void A_failed_compaction_carries_the_error_or_a_plain_default()
+    {
+        var outs = Run(new EventMapper(), Ev.CompactDone("a1", ok: false, error: "context too small"), Ev.CompactDone("a2", ok: false));
+        Assert.Equal(["failed", "failed"], outs.Select(o => Note(o).Str("phase")));
+        Assert.Equal(["context too small", "Copilot couldn't compact the session"], outs.Select(o => Note(o).Str("error")));
+    }
+
+    [Fact]
+    public void Replayed_history_sends_only_the_completed_compaction_and_still_knows_the_start_trigger()
+    {
+        var outs = Run(new EventMapper(history: true), Ev.CompactStart("a1", "manual"), Ev.CompactDone("a1"));
+        Assert.Equal(("ended", "manual"), (Note(outs.Single()).Str("phase"), Note(outs.Single()).Str("trigger")));
+    }
+
+    [Fact]
+    public void A_replayed_user_message_shows_the_display_text_never_the_transformed_content()
+    {
+        var outs = Run(new EventMapper(history: true), Ev.Make("user.message", """{"content":"What next?","transformedContent":"Note: keep it short.\n\nWhat next?"}"""));
+        Assert.Equal("What next?", ((Update)outs.Single()).Body["content"]!["text"]!.GetValue<string>());
+    }
 }

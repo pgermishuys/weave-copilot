@@ -4,7 +4,7 @@ An [ACP](https://agentclientprotocol.com) agent (newline-delimited JSON-RPC 2.0 
 
 ```
 weave-copilot [--copilot-cli <path>] [--hydrafusion]
-weave-copilot --version        # prints "weave-copilot 0.1.0", exits 0, does not start the CLI
+weave-copilot --version        # prints "weave-copilot 0.2.0", exits 0, does not start the CLI
 ```
 
 - CLI path: `--copilot-cli <path>`, then env `WEAVE_COPILOT_CLI`, then `copilot` on `PATH`. The Copilot CLI is not shipped.
@@ -23,8 +23,11 @@ weave-copilot --version        # prints "weave-copilot 0.1.0", exits 0, does not
 | `session/set_model` `{sessionId, modelId}` | Switches model. `session/set_config_option` with `configId:"model"` (`value`) does the same. |
 | `session/load` `{sessionId, cwd, mcpServers}` | Resumes, replays history as `session/update` (`user_message_chunk`, `agent_message_chunk`, `tool_call`, `tool_call_update`; no thoughts), then responds `{models}`. |
 | `session/prompt` `{sessionId, prompt:[...]}` | Text blocks (plus `resource` / `resource_link`, flattened to text). Responds `{stopReason:"end_turn"\|"cancelled", usage?}` when the session goes idle. A session error (for example `fusion routing transport failed`) responds with a JSON-RPC error (code -32000) whose message is the readable text. It never hangs. |
+| `session/prompt` `_meta.modelNotes` | `string[]` beside `sessionId`/`prompt`. Non-empty: the model gets the notes joined by a blank line, then the text; the transcript (and `session/load` replay) shows only the text. |
 | `session/cancel` (notification) | Aborts; the prompt returns `cancelled`. |
 | `_fleet/usage` `{}` | Fleet extension: `{authenticated, login, plan, resetAt, quotas:[{id:"premium_interactions"\|"chat"\|"completions", entitlement, remaining, percentRemaining, unlimited}]}` from GitHub's `copilot_internal/user`, called with the token the CLI already holds (environment token, else the CLI's `config.json`). The token is never returned or logged. Not signed in: `{authenticated:false, quotas:[]}`. GitHub refusing or answering something unexpected: error -32000 with a plain message. `WEAVE_COPILOT_USAGE_URL` replaces the GitHub address (for tests). |
+| `_fleet/compact` `{sessionId, instructions?}` | Fleet extension: compacts the session's history now (manual trigger; `instructions` guide the summary). Responds `{success, tokensRemoved, messagesRemoved}` when done. A turn running: error -32001 "A turn is running; compact the session when it's over". Not successful: error -32000. |
+| `_fleet/compaction` (notification) | `{sessionId, phase:"started"\|"ended"\|"failed", trigger:"manual"\|"auto"\|null, tokensBefore, tokensAfter, summary, error}`. Live: `started`, then `ended`/`failed` (an automatic one can end after the turn did). `session/load` replays only `ended`/`failed`. |
 | `_fleet/steer` `{sessionId, prompt}` | Sends with delivery mode `immediate` (interjects the running turn). Responds `{}`. Only valid while a `session/prompt` is in flight: with no running turn it responds with error -32001 "No turn is running; send the text as a prompt instead" (queue it as a normal prompt). |
 | `_fleet/shell` `{sessionId, command, requestId?}` | Fleet extension: runs a command the user typed (a `!` command) in the session's folder through the CLI's user-requested shell, and responds when it ends: `{toolCallId, success, exitCode, output, error}`. The model sees the output on its next turn. While a prompt is running: error -32001 "A turn is running; run the command when it's over". |
 | `_fleet/ask` `{sessionId, question}` | Fleet extension: an off-the-record question (the CLI's ephemeral query). The model sees the whole conversation, nothing is added to it. Responds `{answer}`; `answer` is null when the model says nothing, and for a session with no user message yet (the model isn't called). |

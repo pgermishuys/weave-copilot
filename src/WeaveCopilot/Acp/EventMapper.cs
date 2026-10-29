@@ -9,6 +9,8 @@ public abstract record AgentOutput;
 public sealed record Update(JsonObject Body) : AgentOutput;
 /// <summary>Params (minus sessionId) of the `_fleet/fusion` notification.</summary>
 public sealed record Fusion(JsonObject Params) : AgentOutput;
+/// <summary>Params (minus sessionId) of the `_fleet/compaction` notification.</summary>
+public sealed record Compaction(JsonObject Params) : AgentOutput;
 /// <summary>The session went idle: the running prompt is over.</summary>
 public sealed record Idle(bool Aborted, JsonObject? Usage) : AgentOutput;
 /// <summary>A tool that may have changed Copilot's todo list finished: the agent reads the list again.</summary>
@@ -36,6 +38,7 @@ public sealed class EventMapper(string? cwd = null, bool history = false)
     private readonly HashSet<string> _userShells = [];         // tool call ids of the user's own `!` commands
     private readonly HashSet<string> _sqlCalls = [];            // Copilot keeps its todo list in a `todos` table it writes with the sql tool
     private readonly Dictionary<string, int> _phaseIndex = [];
+    private readonly Dictionary<string, string?> _compactionTriggers = [];   // a Complete without a trigger of its own takes its Start's
     private long _in, _out, _cacheRead, _cacheWrite, _reasoning;
     private long _nanoAiu;                                       // credits the turn's own calls reported, in nano-AIU
     private Fusion? _heldResolved;                           // history: the CLI logs `resolved` before the user's message, so it waits for the turn's first pass
@@ -43,6 +46,13 @@ public sealed class EventMapper(string? cwd = null, bool history = false)
 
     /// <summary>The subagents and background shells this session started.</summary>
     public BackgroundWork Background { get; } = new();
+
+    private static string? TriggerOf(string? trigger) => trigger is null ? null : trigger == "manual" ? "manual" : "auto";
+
+    private static Compaction Compact(string phase, string? trigger, double? before, double? after, string? summary, string? error) => new(new JsonObject
+    {
+        ["phase"] = phase, ["trigger"] = trigger, ["tokensBefore"] = before, ["tokensAfter"] = after, ["summary"] = summary, ["error"] = error,
+    });
 
     /// <summary>
     /// Subagents run in the parent's event stream; every event of theirs carries an AgentId. Their updates are tagged with the
@@ -142,6 +152,18 @@ public sealed class EventMapper(string? cwd = null, bool history = false)
                 break;
             case SessionIdleEvent idle when !history:
                 yield return new Idle(idle.Data.Aborted == true, TakeUsage());
+                break;
+            case SessionCompactionStartEvent cs:
+                var startTrigger = TriggerOf(cs.Data.Trigger?.Value);
+                if (cs.Data.CompactionAttemptId is { } startId) _compactionTriggers[startId] = startTrigger;
+                if (!history) yield return Compact("started", startTrigger, cs.Data.CurrentTokens, null, null, null);
+                break;
+            case SessionCompactionCompleteEvent cc:
+                var cd = cc.Data;
+                var trigger = cd.Trigger?.Value is { } own ? TriggerOf(own) : cd.CompactionAttemptId is { } cid && _compactionTriggers.TryGetValue(cid, out var t) ? t : null;
+                yield return Compact(cd.Success ? "ended" : "failed", trigger, cd.PreCompactionTokens, cd.PostCompactionTokens,
+                    string.IsNullOrWhiteSpace(cd.SummaryContent) ? null : cd.SummaryContent.Trim(),
+                    cd.Success ? null : cd.Error ?? cd.FailureReason ?? "Copilot couldn't compact the session");
                 break;
             case SessionFusionResolvedEvent fr:
                 var resolved = new Fusion(new JsonObject
