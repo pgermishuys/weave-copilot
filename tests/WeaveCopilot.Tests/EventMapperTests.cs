@@ -99,7 +99,7 @@ public class EventMapperTests
     public void Idle_carries_the_turn_usage_once_and_error_becomes_failure()
     {
         var m = new EventMapper();
-        var idle = (Idle)Run(m, Ev.Usage(100, 20), Ev.Usage(50, 5), Ev.Idle()).Single();
+        var idle = Run(m, Ev.Usage(100, 20), Ev.Usage(50, 5), Ev.Idle()).OfType<Idle>().Single();
         Assert.Equal(175, idle.Usage!["totalTokens"]!.GetValue<long>());
         Assert.Null(((Idle)Run(m, Ev.Idle(aborted: true)).Single()).Usage);
         Assert.Equal("fusion routing transport failed", ((Failure)Run(m, Ev.Error("fusion routing transport failed")).Single()).Message);
@@ -180,13 +180,30 @@ public class EventMapperTests
     }
 
     [Fact]
+    public void A_main_agent_call_reports_its_tokens_against_the_window_a_subagent_call_does_not()
+    {
+        var m = new EventMapper();
+        var outs = Run(m,
+            Ev.Make("session.usage_info", """{"currentTokens":17000,"tokenLimit":100000,"messagesLength":2}"""),
+            Ev.Make("assistant.usage", """{"model":"m","inputTokens":23038,"cacheReadTokens":4,"cacheWriteTokens":23030,"outputTokens":176,"reasoningTokens":88}"""),
+            Ev.Make("assistant.usage", """{"model":"m","inputTokens":900,"outputTokens":9,"parentToolCallId":"task-1"}"""));
+        var updates = outs.OfType<Update>().Select(u => u.Body).ToList();
+        Assert.Equal(2, updates.Count);
+        var call = updates[1];
+        Assert.Equal("23214", call["used"]!.ToJsonString());
+        Assert.Equal("100000", call["size"]!.ToJsonString());
+        Assert.Equal("23030", call["_meta"]!["call"]!["cacheWrite"]!.ToJsonString());
+        Assert.Equal("88", call["_meta"]!["call"]!["reasoning"]!.ToJsonString());
+    }
+
+    [Fact]
     public void A_plain_turn_reports_the_credits_its_calls_did()
     {
         var m = new EventMapper();
-        var idle = (Idle)Run(m, Ev.Make("assistant.usage", """{"model":"m","inputTokens":100,"outputTokens":20,"copilotUsage":{"totalNanoAiu":250000000,"tokenDetails":[]}}"""),
-            Ev.Make("assistant.usage", """{"model":"m","inputTokens":50,"outputTokens":5,"copilotUsage":{"totalNanoAiu":250000000,"tokenDetails":[]}}"""), Ev.Idle()).Single();
+        var idle = Run(m, Ev.Make("assistant.usage", """{"model":"m","inputTokens":100,"outputTokens":20,"copilotUsage":{"totalNanoAiu":250000000,"tokenDetails":[]}}"""),
+            Ev.Make("assistant.usage", """{"model":"m","inputTokens":50,"outputTokens":5,"copilotUsage":{"totalNanoAiu":250000000,"tokenDetails":[]}}"""), Ev.Idle()).OfType<Idle>().Single();
         Assert.Equal(0.5, idle.Usage!["credits"]!.GetValue<double>());
-        Assert.Null(((Idle)Run(m, Ev.Usage(1, 1), Ev.Idle()).Single()).Usage!["credits"]);
+        Assert.Null(Run(m, Ev.Usage(1, 1), Ev.Idle()).OfType<Idle>().Single().Usage!["credits"]);
     }
 
     [Fact]

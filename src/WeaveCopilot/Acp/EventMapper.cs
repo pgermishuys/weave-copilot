@@ -40,6 +40,7 @@ public sealed class EventMapper(string? cwd = null, bool history = false)
     private readonly Dictionary<string, int> _phaseIndex = [];
     private readonly Dictionary<string, string?> _compactionTriggers = [];   // a Complete without a trigger of its own takes its Start's
     private long _in, _out, _cacheRead, _cacheWrite, _reasoning;
+    private double? _size;                                       // the model's context window, from the last usage_info
     private long _nanoAiu;                                       // credits the turn's own calls reported, in nano-AIU
     private Fusion? _heldResolved;                           // history: the CLI logs `resolved` before the user's message, so it waits for the turn's first pass
     private FusionTotals? _fusion;                               // the turn's authoritative totals, once fusion_completed arrived
@@ -137,12 +138,24 @@ public sealed class EventMapper(string? cwd = null, bool history = false)
                 if (!history && tc.Data.ToolCallId is { } doneId && _sqlCalls.Remove(doneId)) yield return new TodosMaybeChanged();
                 break;
             case SessionUsageInfoEvent ui when !history:
+                _size = ui.Data.TokenLimit;
                 yield return new Update(new JsonObject { ["sessionUpdate"] = "usage_update", ["used"] = ui.Data.CurrentTokens, ["size"] = ui.Data.TokenLimit });
                 break;
             case AssistantUsageEvent au when !history:
                 _in += au.Data.InputTokens ?? 0; _out += au.Data.OutputTokens ?? 0; _reasoning += au.Data.ReasoningTokens ?? 0;
                 _cacheRead += au.Data.CacheReadTokens ?? 0; _cacheWrite += au.Data.CacheWriteTokens ?? 0;
                 _nanoAiu += (long)(au.Data.CopilotUsage?.TotalNanoAiu ?? 0);
+                // The main agent's own call (not a subagent's): its tokens, as the CLI counts them (input with the cached ones).
+                if (ev.AgentId is null && au.Data.ParentToolCallId is null)
+                    yield return new Update(new JsonObject
+                    {
+                        ["sessionUpdate"] = "usage_update", ["used"] = (au.Data.InputTokens ?? 0) + (au.Data.OutputTokens ?? 0), ["size"] = _size,
+                        ["_meta"] = new JsonObject { ["call"] = new JsonObject
+                        {
+                            ["input"] = au.Data.InputTokens ?? 0, ["cacheRead"] = au.Data.CacheReadTokens ?? 0, ["cacheWrite"] = au.Data.CacheWriteTokens ?? 0,
+                            ["output"] = au.Data.OutputTokens ?? 0, ["reasoning"] = au.Data.ReasoningTokens ?? 0,
+                        } },
+                    });
                 break;
             case SessionErrorEvent e when !history:
                 yield return new Failure(e.Data.Message ?? e.Data.ErrorType ?? "Copilot reported an error");

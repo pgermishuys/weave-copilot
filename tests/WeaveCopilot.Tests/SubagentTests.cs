@@ -54,7 +54,10 @@ public class SubagentTests
             Ev.Make("assistant.usage", """{"model":"m","inputTokens":7,"outputTokens":3}""", A),
             Ev.Usage(10, 2), Ev.Idle());
         Assert.DoesNotContain(outs, o => o is Failure);
-        Assert.DoesNotContain(outs, o => o is Update);
+        // The only update is the main agent's own call (10 in, 2 out), not the subagent's context bar or call.
+        var update = Assert.Single(outs.OfType<Update>()).Body;
+        Assert.Equal("usage_update", update.Str("sessionUpdate"));
+        Assert.Equal("12", update["used"]!.ToJsonString());
         var usage = Assert.IsType<Idle>(outs.Last()).Usage!;
         Assert.Equal(17, usage["inputTokens"]!.GetValue<long>());
     }
