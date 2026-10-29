@@ -13,6 +13,8 @@ public sealed record Fusion(JsonObject Params) : AgentOutput;
 public sealed record Idle(bool Aborted, JsonObject? Usage) : AgentOutput;
 /// <summary>A tool that may have changed Copilot's todo list finished: the agent reads the list again.</summary>
 public sealed record TodosMaybeChanged : AgentOutput;
+/// <summary>Params (minus sessionId) of the `_fleet/shell_command` notification: a `!` command started, printed, or ended.</summary>
+public sealed record ShellCommand(JsonObject Params) : AgentOutput;
 /// <summary>The session reported an error: fail the running prompt with this text.</summary>
 public sealed record Failure(string Message) : AgentOutput;
 
@@ -29,6 +31,7 @@ public sealed class EventMapper(string? cwd = null, bool history = false)
     private readonly HashSet<string> _liveToolDones = [];
     private readonly HashSet<string> _streamedReasoning = [];
     private readonly HashSet<string> _toolsSeen = [];
+    private readonly HashSet<string> _userShells = [];         // tool call ids of the user's own `!` commands
     private readonly HashSet<string> _sqlCalls = [];            // Copilot keeps its todo list in a `todos` table it writes with the sql tool
     private readonly Dictionary<string, int> _phaseIndex = [];
     private long _in, _out, _cacheRead, _cacheWrite, _reasoning;
@@ -46,7 +49,23 @@ public sealed class EventMapper(string? cwd = null, bool history = false)
         switch (ev)
         {
             case UserMessageEvent u when history && !string.IsNullOrEmpty(u.Data.Content):
-                yield return Chunk("user_message_chunk", u.Data.Content + ImagePlaceholders(u.Data));
+            {
+                // The key lets Fleet give a replayed message the same id every time.
+                var user = Chunk("user_message_chunk", u.Data.Content + ImagePlaceholders(u.Data));
+                user.Body["_meta"] = new JsonObject { ["fleetKey"] = new JsonObject { ["id"] = u.Id.ToString(), ["at"] = u.Timestamp.ToString("O") } };
+                yield return user;
+                break;
+            }
+            case ToolUserRequestedEvent ur when ur.Data.ToolCallId is { } shellId:
+                _userShells.Add(shellId);
+                yield return Shell(shellId, "started", ur.Timestamp, new JsonObject { ["command"] = Json.FromElement(ur.Data.Arguments)?.Str("command") });
+                break;
+            case ToolShellOutputEvent so when !history && so.Data.ToolCallId is { } outId && _userShells.Contains(outId):
+                yield return Shell(outId, "output", so.Timestamp, new JsonObject { ["text"] = so.Data.Text });
+                break;
+            case ToolExecutionCompleteEvent { Data.IsUserRequested: true } done:
+                var text = done.Data.Success ? done.Data.Result?.Content : done.Data.Error?.Message ?? done.Data.Result?.Content;
+                yield return Shell(done.Data.ToolCallId ?? "", "ended", done.Timestamp, new JsonObject { ["output"] = text, ["exitCode"] = done.Data.ShellExecution?.ExitCode, ["success"] = done.Data.Success });
                 break;
             case AssistantMessageDeltaEvent d when !history && !string.IsNullOrEmpty(d.Data.DeltaContent):
                 if (d.Data.MessageId is { } mid) _liveMessages.Add(mid);
@@ -142,6 +161,13 @@ public sealed class EventMapper(string? cwd = null, bool history = false)
                 _phaseIndex.Clear();
                 break;
         }
+    }
+
+    /// <summary>One `_fleet/shell_command` notification; <paramref name="more"/> holds the phase's own fields.</summary>
+    private static ShellCommand Shell(string toolCallId, string phase, DateTimeOffset at, JsonObject more)
+    {
+        more["toolCallId"] = toolCallId; more["phase"] = phase; more["at"] = at.ToString("O");
+        return new ShellCommand(more);
     }
 
     private Fusion? TakeHeld() { var h = _heldResolved; _heldResolved = null; return h; }
