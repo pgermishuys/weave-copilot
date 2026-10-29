@@ -31,9 +31,20 @@ public class AgentTests
 
         var res = await wire.ResultAsync("session/new", Obj(("cwd", "/work/demo"), ("mcpServers", new JsonArray())));
         Assert.Equal("s-1", res.Str("sessionId"));
-        Assert.Equal("gpt-5-mini", res["models"]!.Str("currentModelId"));
-        Assert.Equal("gpt-5-mini", host.CreatedModel);
+        Assert.Equal("auto", res["models"]!.Str("currentModelId"));
+        Assert.Equal("auto", host.CreatedModel);
         Assert.Equal("0x", res["models"]!["availableModels"]![0]!["_meta"]!.Str("copilotUsage"));
+        await wire.CloseAsync();
+    }
+
+    [Fact]
+    public async Task Without_auto_listed_a_new_session_runs_on_and_reports_the_first_model()
+    {
+        var (wire, host, _) = Start();
+        host.Models.RemoveAt(0);
+        var res = await wire.ResultAsync("session/new", Obj(("cwd", "/w")));
+        Assert.Equal("other", res["models"]!.Str("currentModelId"));
+        Assert.Equal("other", host.CreatedModel);
         await wire.CloseAsync();
     }
 
@@ -141,8 +152,8 @@ public class AgentTests
         host.Session.Raise(Ev.Idle());
         Assert.Equal(900, (await wire.NextAsync())["id"]!.GetValue<int>());
         await wire.ResultAsync("session/set_model", Obj(("sessionId", "s-1"), ("modelId", "other")));
-        await wire.ResultAsync("session/set_config_option", Obj(("sessionId", "s-1"), ("configId", "model"), ("value", "gpt-5-mini")));
-        Assert.Equal(["other", "gpt-5-mini"], host.Session.Models);
+        await wire.ResultAsync("session/set_config_option", Obj(("sessionId", "s-1"), ("configId", "model"), ("value", "auto")));
+        Assert.Equal(["other", "auto"], host.Session.Models);
         await wire.CloseAsync();
     }
 
@@ -189,8 +200,8 @@ public class AgentTests
         var (wire, host, _) = Start(hydra: true);
         var res = await wire.ResultAsync("_fleet/models", Obj());
         var ids = res["models"]!.AsArray().Select(m => m.Str("modelId")).ToList();
-        Assert.Equal(["gpt-5-mini", "other", "hydrafusion"], ids);
-        Assert.Equal("gpt-5-mini", res.Str("currentModelId"));
+        Assert.Equal(["auto", "other", "hydrafusion"], ids);
+        Assert.Equal("auto", res.Str("currentModelId"));
         Assert.Null(host.CreatedModel);
         Assert.Equal(0, host.Creates);
         var again = await wire.ResultAsync("session/new", Obj(("cwd", "/w")));
