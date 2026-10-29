@@ -9,7 +9,8 @@ namespace WeaveCopilot.Acp;
 /// <summary>The ACP agent: JSON-RPC methods on one side, an <see cref="ICopilotHost"/> on the other.</summary>
 public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydraFusion, string version, Action<string> onFatal, ICopilotLogin? login = null, ICopilotUsage? usage = null)
 {
-    private const string DefaultModel = "gpt-5-mini";
+    /// <summary>Copilot's own router. Passed to the CLI, so what a new session shows is what it runs on (with no model the CLI picks its startup default).</summary>
+    private const string DefaultModel = "auto";
     private const string HydraModel = "hydrafusion";
 
     private sealed class Sess(ICopilotSession session, string cwd, EventMapper mapper)
@@ -154,10 +155,13 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
     {
         var cwd = p.Str("cwd") ?? Directory.GetCurrentDirectory();
         var models = await ModelsAsync(cwd);
-        var model = models.Any(m => m.Id == DefaultModel) ? DefaultModel : null;
-        var s = await Register(await host.CreateAsync(cwd, model, Permission, AcpMcpServer.Parse(p?["mcpServers"]), SkillDirectories(p)), cwd, model ?? models.FirstOrDefault()?.Id);
+        var model = DefaultFor(models);
+        var s = await Register(await host.CreateAsync(cwd, model, Permission, AcpMcpServer.Parse(p?["mcpServers"]), SkillDirectories(p)), cwd, model);
         return new JsonObject { ["sessionId"] = s.Session.Id, ["models"] = ModelsJson(models, s.Model) };
     }
+
+    /// <summary>Auto when the account lists it, else the first model listed; null only when there are none.</summary>
+    private static string? DefaultFor(IReadOnlyList<ModelEntry> models) => models.Any(m => m.Id == DefaultModel) ? DefaultModel : models.FirstOrDefault()?.Id;
 
     private static List<string> SkillDirectories(JsonNode? p) => Strings(p?["_meta"]?["skillDirectories"]);
 
@@ -190,7 +194,7 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
         return new JsonObject
         {
             ["models"] = ModelList(models),
-            ["currentModelId"] = models.Any(m => m.Id == DefaultModel) ? DefaultModel : null,
+            ["currentModelId"] = DefaultFor(models),
         };
     }
 
