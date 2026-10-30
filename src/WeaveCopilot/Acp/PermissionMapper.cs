@@ -56,9 +56,32 @@ public static class PermissionMapper
             }
             case PermissionRequestUrl u:
                 return Base(u.ToolCallId, "Fetch " + u.Url, "fetch", new JsonObject { ["url"] = u.Url });
+            case PermissionRequestMemory mem:
+                return Base(mem.ToolCallId, MemoryTitle(mem), "other", WithoutNulls(new JsonObject
+                {
+                    ["action"] = mem.Action?.Value, ["fact"] = mem.Fact, ["subject"] = mem.Subject, ["scope"] = mem.Scope?.Value, ["repo"] = mem.RepoNwo,
+                    ["citations"] = mem.Citations, ["direction"] = mem.Direction?.Value, ["reason"] = mem.Reason,
+                }));
             default:
                 return Base(null, r.Kind ?? "Permission", "other", null);
         }
+    }
+
+    /// <summary>Says who will see a stored memory, as the CLI's own prompt does: the user alone, or the repository's collaborators.</summary>
+    private static string MemoryTitle(PermissionRequestMemory m)
+    {
+        if (m.Action == PermissionRequestMemoryAction.Vote)
+            return (m.Direction == PermissionRequestMemoryDirection.Downvote ? "Mark memory as outdated: " : "Confirm memory: ") + m.Fact;
+        return m.Scope == PermissionRequestMemoryScope.Repository
+            ? $"Remember (shared with {m.RepoNwo ?? "repository collaborators"}): {m.Fact}"
+            : "Remember for you: " + m.Fact;
+    }
+
+    /// <summary>rawInput isn't pruned on the wire (tool input passes through as is), so a built one drops its own empty fields.</summary>
+    private static JsonObject WithoutNulls(JsonObject o)
+    {
+        foreach (var key in o.Where(kv => kv.Value is null).Select(kv => kv.Key).ToList()) o.Remove(key);
+        return o;
     }
 
     /// <summary>Maps the client's `outcome` ({outcome:"selected",optionId} | {outcome:"cancelled"}) to an SDK decision. Anything unclear denies.</summary>
@@ -81,6 +104,7 @@ public static class PermissionMapper
             PermissionRequestRead => new PermissionDecisionApproveForSessionApprovalRead(),
             PermissionRequestShell s => new PermissionDecisionApproveForSessionApprovalCommands { CommandIdentifiers = (s.Commands ?? []).Select(c => c.Identifier).ToList() },
             PermissionRequestMcp m => new PermissionDecisionApproveForSessionApprovalMcp { ServerName = m.ServerName, ToolName = m.ToolName },
+            PermissionRequestMemory => new PermissionDecisionApproveForSessionApprovalMemory(),
             _ => null,
         };
         return approval is null ? PermissionDecision.ApproveOnce() : new PermissionDecisionApproveForSession { Approval = approval };
