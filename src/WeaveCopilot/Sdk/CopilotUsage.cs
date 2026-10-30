@@ -4,7 +4,8 @@ using WeaveCopilot.Acp;
 
 namespace WeaveCopilot.Sdk;
 
-public sealed record UsageQuota(string Id, int? Entitlement, int? Remaining, double? PercentRemaining, bool Unlimited);
+public sealed record UsageQuota(string Id, int? Entitlement, int? Remaining, double? PercentRemaining, bool Unlimited,
+    double? CreditsUsed = null, bool? HasQuota = null, bool? TokenBasedBilling = null);
 
 public sealed record CopilotUsageResult(string? Plan, string? ResetAt, string? Login, IReadOnlyList<UsageQuota> Quotas);
 
@@ -64,7 +65,8 @@ public sealed class CopilotUsage(string home, HttpClient? http = null, string? u
         if (root["quota_snapshots"] is JsonObject snapshots)
             foreach (var id in QuotaIds)
                 if (snapshots[id] is JsonObject q)
-                    quotas.Add(new UsageQuota(id, Int(q["entitlement"]), Int(q["remaining"]), Num(q["percent_remaining"]), q["unlimited"] is JsonValue u && u.TryGetValue<bool>(out var b) && b));
+                    quotas.Add(new UsageQuota(id, Int(q["entitlement"]), Int(q["remaining"]), Num(q["percent_remaining"]), q["unlimited"] is JsonValue u && u.TryGetValue<bool>(out var b) && b,
+                        Num(q["credits_used"]) is { } cu and >= 0 ? cu : null, Bool(q["has_quota"]), Bool(q["token_based_billing"]) ?? Bool(root["token_based_billing"])));
         var plan = Text(root["copilot_plan"]);
         if (quotas.Count == 0 && plan is null) throw new UsageException("GitHub's Copilot usage answer wasn't what Fleet expected.");
         return new CopilotUsageResult(plan, Text(root["quota_reset_date_utc"]) ?? Text(root["quota_reset_date"]), Text(root["login"]), quotas);
@@ -72,6 +74,7 @@ public sealed class CopilotUsage(string home, HttpClient? http = null, string? u
 
     private static string? Text(JsonNode? n) => n is JsonValue v && v.TryGetValue<string>(out var s) && s.Length > 0 ? s : null;
     private static double? Num(JsonNode? n) => n is JsonValue v && v.TryGetValue<double>(out var d) ? d : null;
+    private static bool? Bool(JsonNode? n) => n is JsonValue v && v.TryGetValue<bool>(out var b) ? b : null;
     private static int? Int(JsonNode? n) => Num(n) is { } d ? (int)Math.Round(d) : null;
 
     /// <summary>The same sign-in the CLI uses: a token in the environment first, then the one in its config file.</summary>

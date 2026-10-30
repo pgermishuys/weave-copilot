@@ -98,7 +98,8 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
         if (u is null) throw new JsonRpcException(-32000, "Copilot is signed in, but its token isn't somewhere Fleet can read it (it may be in the system keychain); set COPILOT_GITHUB_TOKEN or sign in again.");
         var quotas = new JsonArray();
         foreach (var q in u.Quotas)
-            quotas.Add(new JsonObject { ["id"] = q.Id, ["entitlement"] = q.Entitlement, ["remaining"] = q.Remaining, ["percentRemaining"] = q.PercentRemaining, ["unlimited"] = q.Unlimited });
+            quotas.Add(new JsonObject { ["id"] = q.Id, ["entitlement"] = q.Entitlement, ["remaining"] = q.Remaining, ["percentRemaining"] = q.PercentRemaining, ["unlimited"] = q.Unlimited,
+                ["creditsUsed"] = q.CreditsUsed, ["hasQuota"] = q.HasQuota, ["tokenBasedBilling"] = q.TokenBasedBilling });
         return new JsonObject { ["authenticated"] = true, ["login"] = u.Login ?? s.Login, ["plan"] = u.Plan, ["resetAt"] = u.ResetAt, ["quotas"] = quotas };
     }
 
