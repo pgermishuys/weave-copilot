@@ -142,7 +142,7 @@ public sealed class FakeSession(string id) : ICopilotSession
 public sealed class FakeHost : ICopilotHost
 {
     public FakeSession Session { get; } = new("s-1");
-    public List<ModelEntry> Models { get; } = [new("auto", "Auto", "0x"), new("other", "Other", "1x")];
+    public List<ModelEntry> Models { get; } = [new("auto", "Auto", "0x"), new("other", "Other", "1x", "low", "lightweight")];
     public bool HydraProbeResult { get; set; } = true;
     public int HydraProbes { get; private set; }
     public string? CreatedModel { get; private set; }

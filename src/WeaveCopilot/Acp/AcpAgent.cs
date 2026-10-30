@@ -480,7 +480,11 @@ public sealed class AcpAgent(JsonRpcConnection rpc, ICopilotHost host, bool hydr
     private static JsonArray ModelList(IReadOnlyList<ModelEntry> models) => new(models.Select(m =>
     {
         var o = new JsonObject { ["modelId"] = m.Id, ["name"] = m.Name };
-        if (m.Usage is not null) o["_meta"] = new JsonObject { ["copilotUsage"] = m.Usage };
+        var meta = new JsonObject();
+        if (m.Usage is not null) meta["copilotUsage"] = m.Usage;
+        if (m.PriceTier is not null) meta["copilotPriceTier"] = m.PriceTier;
+        if (m.Category is not null) meta["copilotCategory"] = m.Category;
+        if (meta.Count > 0) o["_meta"] = meta;
         return (JsonNode)o;
     }).ToArray());
 
