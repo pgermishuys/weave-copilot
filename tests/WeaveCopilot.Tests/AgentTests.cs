@@ -198,6 +198,61 @@ public class AgentTests
     }
 
     [Fact]
+    public void A_memory_kept_for_the_user_says_so_and_carries_the_fact()
+    {
+        var req = new GitHub.Copilot.PermissionRequestMemory
+        {
+            Action = GitHub.Copilot.PermissionRequestMemoryAction.Store, Fact = "Tests run with dotnet test", Subject = "testing",
+            Scope = GitHub.Copilot.PermissionRequestMemoryScope.User, Citations = "README.md:12", ToolCallId = "m1",
+        };
+        var tc = PermissionMapper.ToolCall(req, null);
+        Assert.Equal("m1", tc.Str("toolCallId"));
+        Assert.Equal("Remember for you: Tests run with dotnet test", tc.Str("title"));
+        Assert.Equal("other", tc.Str("kind"));
+        var raw = tc["rawInput"]!.AsObject();
+        Assert.Equal(["action", "fact", "subject", "scope", "citations"], raw.Select(kv => kv.Key));
+        Assert.Equal("store", raw.Str("action"));
+        Assert.Equal("user", raw.Str("scope"));
+        Assert.Equal("README.md:12", raw.Str("citations"));
+    }
+
+    [Fact]
+    public void A_memory_kept_for_the_repository_names_who_it_is_shared_with()
+    {
+        var req = new GitHub.Copilot.PermissionRequestMemory
+        {
+            Action = GitHub.Copilot.PermissionRequestMemoryAction.Store, Fact = "Tests run with dotnet test",
+            Scope = GitHub.Copilot.PermissionRequestMemoryScope.Repository, RepoNwo = "octo/demo", ToolCallId = "m2",
+        };
+        var tc = PermissionMapper.ToolCall(req, null);
+        Assert.Equal("Remember (shared with octo/demo): Tests run with dotnet test", tc.Str("title"));
+        Assert.Equal("repository", tc["rawInput"].Str("scope"));
+        Assert.Equal("octo/demo", tc["rawInput"].Str("repo"));
+    }
+
+    [Fact]
+    public void A_memory_vote_reads_as_confirming_or_marking_it_outdated()
+    {
+        GitHub.Copilot.PermissionRequestMemory Vote(GitHub.Copilot.PermissionRequestMemoryDirection d) => new()
+        {
+            Action = GitHub.Copilot.PermissionRequestMemoryAction.Vote, Fact = "Build with make", Direction = d, Reason = "The repo uses dotnet now", ToolCallId = "m3",
+        };
+        var down = PermissionMapper.ToolCall(Vote(GitHub.Copilot.PermissionRequestMemoryDirection.Downvote), null);
+        Assert.Equal("Mark memory as outdated: Build with make", down.Str("title"));
+        Assert.Equal(["action", "fact", "direction", "reason"], down["rawInput"]!.AsObject().Select(kv => kv.Key));
+        Assert.Equal("downvote", down["rawInput"].Str("direction"));
+        Assert.Equal("Confirm memory: Build with make", PermissionMapper.ToolCall(Vote(GitHub.Copilot.PermissionRequestMemoryDirection.Upvote), null).Str("title"));
+    }
+
+    [Fact]
+    public void Always_allowing_a_memory_write_approves_memory_for_the_session()
+    {
+        var req = new GitHub.Copilot.PermissionRequestMemory { Action = GitHub.Copilot.PermissionRequestMemoryAction.Store, Fact = "f", Scope = GitHub.Copilot.PermissionRequestMemoryScope.User };
+        var always = Assert.IsType<GitHub.Copilot.Rpc.PermissionDecisionApproveForSession>(PermissionMapper.ToDecision(req, Obj(("outcome", "selected"), ("optionId", "allow_always"))));
+        Assert.IsType<GitHub.Copilot.Rpc.PermissionDecisionApproveForSessionApprovalMemory>(always.Approval);
+    }
+
+    [Fact]
     public async Task Fleet_models_lists_models_without_creating_a_session_and_shares_the_hydrafusion_gate()
     {
         var (wire, host, _) = Start(hydra: true);
