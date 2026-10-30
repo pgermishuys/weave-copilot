@@ -158,4 +158,62 @@ public sealed class UsageTests : IDisposable
         try { Assert.Equal("individual_pro", (await usage.GetAsync("octo-demo", "https://github.com", default))!.Plan); }
         finally { Environment.SetEnvironmentVariable(CopilotUsage.UrlVariable, null); }
     }
+
+    private const string Enterprise = """
+        {"copilot_plan":"enterprise","quota_reset_date":"2026-11-01","quota_reset_date_utc":"2026-11-01T00:00:00.000Z","token_based_billing":true,"quota_snapshots":{
+         "chat":{"percent_remaining":100.0,"quota_id":"chat","unlimited":true,"has_quota":true,"token_based_billing":true,"credits_used":0,"remaining":0,"entitlement":0},
+         "completions":{"percent_remaining":100.0,"quota_id":"completions","unlimited":true,"has_quota":true,"token_based_billing":true,"credits_used":0,"remaining":0,"entitlement":0},
+         "premium_interactions":{"percent_remaining":100.0,"quota_id":"premium_interactions","unlimited":true,"has_quota":false,"token_based_billing":true,"credits_used":307846,"remaining":0,"entitlement":0}}}
+        """;
+
+    [Fact]
+    public void Parse_reads_credits_used_has_quota_and_token_based_billing()
+    {
+        var r = CopilotUsage.Parse(Enterprise);
+        var premium = r.Quotas.Single(x => x.Id == "premium_interactions");
+        Assert.Equal(307846, premium.CreditsUsed);
+        Assert.False(premium.HasQuota);
+        Assert.True(premium.TokenBasedBilling);
+        var chat = r.Quotas.Single(x => x.Id == "chat");
+        Assert.Equal(0, chat.CreditsUsed);
+        Assert.True(chat.HasQuota);
+    }
+
+    [Fact]
+    public void Parse_gives_nulls_for_an_older_answer_and_bad_credits()
+    {
+        var old = CopilotUsage.Parse(Normal).Quotas;
+        Assert.All(old, x => { Assert.Null(x.CreditsUsed); Assert.Null(x.HasQuota); Assert.Null(x.TokenBasedBilling); });
+        var bad = CopilotUsage.Parse("""{"quota_snapshots":{"chat":{"credits_used":-1,"has_quota":"yes"},"completions":{"credits_used":"5"}}}""").Quotas;
+        Assert.All(bad, x => { Assert.Null(x.CreditsUsed); Assert.Null(x.HasQuota); });
+    }
+
+    [Fact]
+    public void Parse_falls_back_to_the_top_level_token_based_billing()
+    {
+        var r = CopilotUsage.Parse("""{"token_based_billing":true,"quota_snapshots":{"chat":{"unlimited":true},"completions":{"token_based_billing":false}}}""");
+        Assert.True(r.Quotas.Single(x => x.Id == "chat").TokenBasedBilling);
+        Assert.False(r.Quotas.Single(x => x.Id == "completions").TokenBasedBilling);
+    }
+
+    [Fact]
+    public async Task Usage_through_the_agent_carries_the_credit_facts_and_null_when_absent()
+    {
+        _body = Enterprise;
+        var wire = Agent(new FakeHost());
+        var q = (JsonArray)(await wire.ResultAsync("_fleet/usage", new JsonObject()))["quotas"]!;
+        var premium = q.Single(x => x!.Str("id") == "premium_interactions")!;
+        Assert.Equal(307846, premium["creditsUsed"]!.GetValue<double>());
+        Assert.False(premium["hasQuota"]!.GetValue<bool>());
+        Assert.True(premium["tokenBasedBilling"]!.GetValue<bool>());
+        await wire.CloseAsync();
+
+        _body = Normal;
+        wire = Agent(new FakeHost());
+        var old = ((JsonArray)(await wire.ResultAsync("_fleet/usage", new JsonObject()))["quotas"]!)[0]!.AsObject();
+        Assert.Null(old["creditsUsed"]);
+        Assert.Null(old["hasQuota"]);
+        Assert.Null(old["tokenBasedBilling"]);
+        await wire.CloseAsync();
+    }
 }
