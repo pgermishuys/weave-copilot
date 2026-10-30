@@ -3,7 +3,7 @@ using GitHub.Copilot.Rpc;
 
 namespace WeaveCopilot.Sdk;
 
-public sealed record ModelEntry(string Id, string Name, string? Usage);
+public sealed record ModelEntry(string Id, string Name, string? Usage, string? PriceTier = null, string? Category = null);
 
 public sealed record AuthStatus(bool Authenticated, string? AuthType, string? Host, string? Login, string? Message);
 

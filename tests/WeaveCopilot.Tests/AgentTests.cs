@@ -34,6 +34,9 @@ public class AgentTests
         Assert.Equal("auto", res["models"]!.Str("currentModelId"));
         Assert.Equal("auto", host.CreatedModel);
         Assert.Equal("0x", res["models"]!["availableModels"]![0]!["_meta"]!.Str("copilotUsage"));
+        Assert.Equal("low", res["models"]!["availableModels"]![1]!["_meta"]!.Str("copilotPriceTier"));
+        Assert.Equal("lightweight", res["models"]!["availableModels"]![1]!["_meta"]!.Str("copilotCategory"));
+        Assert.Null(res["models"]!["availableModels"]![0]!["_meta"]!["copilotPriceTier"]);
         await wire.CloseAsync();
     }
 
@@ -202,6 +205,9 @@ public class AgentTests
         var ids = res["models"]!.AsArray().Select(m => m.Str("modelId")).ToList();
         Assert.Equal(["auto", "other", "hydrafusion"], ids);
         Assert.Equal("auto", res.Str("currentModelId"));
+        Assert.Equal("low", res["models"]![1]!["_meta"]!.Str("copilotPriceTier"));
+        Assert.Equal("lightweight", res["models"]![1]!["_meta"]!.Str("copilotCategory"));
+        Assert.Null(res["models"]![2]!["_meta"]); // hydrafusion has none of the three
         Assert.Null(host.CreatedModel);
         Assert.Equal(0, host.Creates);
         var again = await wire.ResultAsync("session/new", Obj(("cwd", "/w")));

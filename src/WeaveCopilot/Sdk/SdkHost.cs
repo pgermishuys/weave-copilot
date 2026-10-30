@@ -45,8 +45,23 @@ public sealed class SdkHost(string cliPath, bool hydraFusion) : ICopilotHost
 
     public async Task PingAsync() => await _client.GetStatusAsync();
 
-    public async Task<IReadOnlyList<ModelEntry>> ListModelsAsync() =>
-        (await _client.ListModelsAsync()).Select(m => new ModelEntry(m.Id, m.Name ?? m.Id, m.Billing?.Multiplier is { } x ? $"{x:0.##}x" : null)).ToList();
+    public async Task<IReadOnlyList<ModelEntry>> ListModelsAsync()
+    {
+        var models = await _client.ListModelsAsync();
+        // The raw list carries the price tier and capability category; an older CLI lacks it, and listing never fails over it.
+        var raw = new Dictionary<string, (string? Price, string? Category)>();
+        try
+        {
+            foreach (var m in (await _client.Rpc.Models.ListAsync()).Models)
+                raw[m.Id] = (m.ModelPickerPriceCategory?.Value, m.ModelPickerCategory?.Value);
+        }
+        catch { }
+        return models.Select(m =>
+        {
+            raw.TryGetValue(m.Id, out var r);
+            return new ModelEntry(m.Id, m.Name ?? m.Id, m.Billing?.Multiplier is { } x ? $"{x:0.##}x" : null, r.Price, r.Category);
+        }).ToList();
+    }
 
     public async Task<AuthStatus> AuthStatusAsync()
     {
